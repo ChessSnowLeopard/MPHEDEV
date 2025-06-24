@@ -35,6 +35,9 @@ func main() {
 	r.GET("/params/ckks", handlers.GetCKKSParamsHandler(coordinator))
 	r.POST("/keys/public", handlers.PostPublicKeyHandler(coordinator))
 	r.POST("/keys/secret", handlers.PostSecretKeyHandler(coordinator))
+	r.POST("/keys/galois", handlers.PostGaloisKeyHandler(coordinator))
+	r.POST("/keys/relin", handlers.PostRelinearizationKeyHandler(coordinator))
+	r.GET("/keys/relin/round1", handlers.GetRelinearizationKeyRound1AggregatedHandler(coordinator))
 	r.GET("/participants", handlers.GetParticipantsHandler(coordinator))
 	r.GET("/setup/status", handlers.GetSetupStatusHandler(coordinator))
 
