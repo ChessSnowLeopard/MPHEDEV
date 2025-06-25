@@ -5,6 +5,11 @@ type ParticipantInfo struct {
 	Status string `json:"status"`
 }
 
+type PeerInfo struct {
+	ID  int    `json:"id"`
+	URL string `json:"url"`
+}
+
 type PublicKeyShare struct {
 	ParticipantID int    `json:"participant_id"`
 	ShareData     string `json:"share_data"`
@@ -18,5 +23,11 @@ type SecretKeyShare struct {
 type GaloisKeyShare struct {
 	ParticipantID int    `json:"participant_id"`
 	GalEl         uint64 `json:"gal_el"`
+	ShareData     string `json:"share_data"`
+}
+
+type RelinearizationKeyShare struct {
+	ParticipantID int    `json:"participant_id"`
+	Round         int    `json:"round"`
 	ShareData     string `json:"share_data"`
 }

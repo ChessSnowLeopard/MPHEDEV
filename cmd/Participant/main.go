@@ -2,8 +2,11 @@ package main
 
 import (
 	"MPHEDev/cmd/Participant/services"
+	"MPHEDev/cmd/Participant/utils"
 	"fmt"
 	"time"
+
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 )
 
 func main() {
@@ -18,11 +21,16 @@ func main() {
 	}
 	fmt.Printf("注册成功，ID: %d\n", participant.ID)
 
+	// 设置参与方ID到客户端
+	participant.CoordinatorClient.SetParticipantID(participant.ID)
+
 	// 2. 获取CKKS参数、CRP和伽罗瓦密钥相关参数
-	params, crp, galEls, galoisCRPs, rlkCRP, err := participant.GetParams(coordinatorURL)
+	params, crp, galEls, galoisCRPs, rlkCRP, err := participant.CoordinatorClient.GetParams()
 	if err != nil {
 		panic(err)
 	}
+	participant.KeyManager.SetParams(*params)
+	participant.KeyManager.TotalGaloisKeys = len(galEls)
 	fmt.Printf("获取参数成功，伽罗瓦元素数量: %d\n", len(galEls))
 
 	// 3. 生成本地私钥和公钥份额
@@ -31,13 +39,14 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	participant.KeyManager.SetSecretKey(sk)
 
 	// 4. 编码并上传私钥
 	skB64, err := keyGen.EncodeSecretKey(sk)
 	if err != nil {
 		panic(err)
 	}
-	if err := participant.UploadSecretKey(coordinatorURL, skB64); err != nil {
+	if err := participant.CoordinatorClient.UploadSecretKey(skB64); err != nil {
 		panic(err)
 	}
 	fmt.Println("上传私钥成功")
@@ -47,7 +56,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := participant.UploadPublicKeyShare(coordinatorURL, shareB64); err != nil {
+	if err := participant.CoordinatorClient.UploadPublicKeyShare(shareB64); err != nil {
 		panic(err)
 	}
 	fmt.Println("上传公钥份额成功")
@@ -64,7 +73,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		if err := participant.UploadGaloisKeyShare(coordinatorURL, galEl, shareB64); err != nil {
+		if err := participant.CoordinatorClient.UploadGaloisKeyShare(galEl, shareB64); err != nil {
 			panic(err)
 		}
 	}
@@ -79,7 +88,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := participant.UploadRelinearizationKeyShare(coordinatorURL, 1, rlkShare1B64); err != nil {
+	if err := participant.CoordinatorClient.UploadRelinearizationKeyShare(1, rlkShare1B64); err != nil {
 		panic(err)
 	}
 	fmt.Println("上传重线性化密钥第一轮份额成功")
@@ -87,7 +96,7 @@ func main() {
 	// 8. 等待第一轮聚合完成，然后获取聚合结果
 	fmt.Println("等待第一轮聚合完成...")
 	for {
-		status, err := participant.PollStatus(coordinatorURL)
+		status, err := participant.CoordinatorClient.PollStatus()
 		if err != nil {
 			fmt.Println("状态查询失败:", err)
 			time.Sleep(2 * time.Second)
@@ -101,7 +110,7 @@ func main() {
 	}
 
 	// 9. 获取聚合后的第一轮份额，生成第二轮份额
-	aggregatedShare1, err := participant.GetRelinearizationKeyRound1Aggregated(coordinatorURL)
+	aggregatedShare1, err := participant.CoordinatorClient.GetRelinearizationKeyRound1Aggregated()
 	if err != nil {
 		panic(err)
 	}
@@ -112,13 +121,50 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := participant.UploadRelinearizationKeyShare(coordinatorURL, 2, rlkShare2B64); err != nil {
+	if err := participant.CoordinatorClient.UploadRelinearizationKeyShare(2, rlkShare2B64); err != nil {
 		panic(err)
 	}
 	fmt.Println("上传重线性化密钥第二轮份额成功")
 
 	// 10. 常驻在线，轮询全局状态
-	if err := participant.WaitForCompletion(coordinatorURL); err != nil {
+	if err := participant.CoordinatorClient.WaitForCompletion(); err != nil {
 		panic(err)
 	}
+
+	// 11. 获取聚合后的密钥
+	fmt.Println("获取聚合后的密钥...")
+	keys, err := participant.CoordinatorClient.GetAggregatedKeys()
+	if err != nil {
+		panic(err)
+	}
+
+	// 解析并设置公钥
+	pubKeyBytes, err := utils.DecodeFromBase64(keys.PubKey)
+	if err != nil {
+		panic(err)
+	}
+	var pubKey rlwe.PublicKey
+	if err := utils.DecodeShare(pubKeyBytes, &pubKey); err != nil {
+		panic(err)
+	}
+	participant.KeyManager.SetPublicKey(&pubKey)
+
+	// 解析并设置重线性化密钥
+	relineKeyBytes, err := utils.DecodeFromBase64(keys.RelineKey)
+	if err != nil {
+		panic(err)
+	}
+	var relineKey rlwe.RelinearizationKey
+	if err := utils.DecodeShare(relineKeyBytes, &relineKey); err != nil {
+		panic(err)
+	}
+	participant.KeyManager.SetRelinearizationKey(&relineKey)
+
+	fmt.Println("密钥获取完成！")
+
+	// 12. 通知主循环密钥分发完成
+	close(participant.ReadyCh)
+
+	// === 启动主循环 ===
+	participant.RunMainLoop()
 }
