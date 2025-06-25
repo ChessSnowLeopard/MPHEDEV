@@ -133,7 +133,7 @@ func (c *Coordinator) AddParticipantURL(participantID int, url string) error {
 }
 
 // GetParams 获取参数
-func (c *Coordinator) GetParams() (interface{}, string, []uint64, map[uint64]string, string) {
+func (c *Coordinator) GetParams() (interface{}, string, []uint64, map[uint64]string, string, string) {
 	return c.ParameterManager.GetParams()
 }
 
@@ -440,13 +440,14 @@ func (c *Coordinator) registerHandler(ctx *gin.Context) {
 }
 
 func (c *Coordinator) getCKKSParamsHandler(ctx *gin.Context) {
-	params, crp, galEls, galoisCRPs, rlkCRP := c.GetParams()
+	params, crp, galEls, galoisCRPs, rlkCRP, refreshCRS := c.GetParams()
 	ctx.JSON(http.StatusOK, gin.H{
 		"params":      params,
 		"crp":         crp,
 		"gal_els":     galEls,
 		"galois_crps": galoisCRPs,
 		"rlk_crp":     rlkCRP,
+		"refresh_crs": refreshCRS,
 	})
 }
 

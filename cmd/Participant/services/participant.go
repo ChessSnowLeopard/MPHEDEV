@@ -28,6 +28,7 @@ type Participant struct {
 	// 加密相关
 	KeyManager        *crypto.KeyManager
 	DecryptionService *crypto.DecryptionService
+	RefreshService    *crypto.RefreshService
 
 	// 状态管理
 	Ready   bool
@@ -46,10 +47,14 @@ func NewParticipant() *Participant {
 	// 创建解密服务
 	decryptionService := crypto.NewDecryptionService(keyManager, client)
 
+	// 创建刷新服务
+	refreshService := crypto.NewRefreshService(keyManager, client)
+
 	return &Participant{
 		Client:            client,
 		KeyManager:        keyManager,
 		DecryptionService: decryptionService,
+		RefreshService:    refreshService,
 		ReadyCh:           make(chan struct{}),
 	}
 }
@@ -105,7 +110,7 @@ func (p *Participant) Register(coordinatorURL string) error {
 // startHTTPServer 启动HTTP服务器
 func (p *Participant) startHTTPServer() error {
 	// 创建HTTP处理器
-	handlers := server.NewHandlers(p.KeyManager, p.DecryptionService)
+	handlers := server.NewHandlers(p.KeyManager, p.DecryptionService, p.RefreshService)
 	handlerMap := handlers.GetHandlers()
 
 	// 创建HTTP服务器
@@ -148,6 +153,12 @@ func (p *Participant) RequestCollaborativeDecrypt() error {
 	return p.DecryptionService.RequestCollaborativeDecrypt(onlinePeers, p.ID)
 }
 
+// RequestCollaborativeRefresh 发起协同刷新请求
+func (p *Participant) RequestCollaborativeRefresh() error {
+	onlinePeers := p.HeartbeatManager.GetOnlinePeers()
+	return p.RefreshService.RequestCollaborativeRefresh(onlinePeers, p.ID)
+}
+
 // RunMainLoop 运行主循环
 func (p *Participant) RunMainLoop() {
 	// 等待密钥分发完成
@@ -161,8 +172,9 @@ func (p *Participant) RunMainLoop() {
 	for {
 		fmt.Println("\n请选择操作：")
 		fmt.Println("1. 发起协同解密请求")
-		fmt.Println("2. 查看在线状态")
-		fmt.Println("3. 退出")
+		fmt.Println("2. 发起协同刷新请求")
+		fmt.Println("3. 查看在线状态")
+		fmt.Println("4. 退出")
 		fmt.Print("输入选项: ")
 
 		var choice int
@@ -185,6 +197,17 @@ func (p *Participant) RunMainLoop() {
 				fmt.Printf("[错误] 协同解密失败: %v\n", err)
 			}
 		case 2:
+			// 先检查在线状态
+			if err := p.CheckOnlineStatusBeforeOperation(); err != nil {
+				fmt.Println("[错误] 在线状态检查失败:", err)
+				continue
+			}
+
+			// 发起协同刷新请求
+			if err := p.RequestCollaborativeRefresh(); err != nil {
+				fmt.Printf("[错误] 协同刷新失败: %v\n", err)
+			}
+		case 3:
 			// 临时禁用静默模式以显示状态
 			p.SetSilentMode(false)
 			if err := p.ShowOnlineStatus(); err != nil {
@@ -192,7 +215,7 @@ func (p *Participant) RunMainLoop() {
 			}
 			// 重新启用静默模式
 			p.SetSilentMode(true)
-		case 3:
+		case 4:
 			fmt.Println("退出程序。")
 			p.StopHeartbeat()
 			return

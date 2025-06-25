@@ -32,6 +32,7 @@ type ParamsResponse struct {
 	GalEls     []uint64               `json:"gal_els"`
 	GaloisCRPs map[uint64]string      `json:"galois_crps"`
 	RlkCRP     string                 `json:"rlk_crp"`
+	RefreshCRS string                 `json:"refresh_crs"`
 }
 
 // StatusResponse 状态响应
@@ -128,4 +129,21 @@ type DecryptionService struct {
 type CoordinatorClient struct {
 	baseURL string
 	client  *HTTPClient
+}
+
+// RefreshTask 刷新任务
+type RefreshTask struct {
+	TaskID     string `json:"task_id"`
+	Ciphertext string `json:"ciphertext"` // base64编码的密文
+}
+
+// RefreshShareResponse 刷新份额响应
+type RefreshShareResponse struct {
+	Share string `json:"share"` // base64编码的刷新份额
+}
+
+// RefreshRequest 刷新请求
+type RefreshRequest struct {
+	TaskID     string `json:"task_id"`
+	Ciphertext string `json:"ciphertext"`
 }

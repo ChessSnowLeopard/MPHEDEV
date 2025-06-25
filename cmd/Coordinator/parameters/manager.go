@@ -18,6 +18,10 @@ type Manager struct {
 	globalCRP     multiparty.PublicKeyGenCRP
 	crpBytes      string
 
+	// 刷新协议相关
+	refreshCRS     *sampling.KeyedPRNG
+	refreshCRSSeed string // 使用种子而不是序列化对象
+
 	// 伽罗瓦密钥相关
 	galEls          []uint64
 	galoisCRPs      map[uint64]multiparty.GaloisKeyGenCRP
@@ -46,6 +50,14 @@ func NewManager() (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// 生成刷新CRS
+	refreshCRS, err := sampling.NewKeyedPRNG([]byte("refresh_crs_seed_32_bytes_long"))
+	if err != nil {
+		return nil, err
+	}
+	// 使用种子而不是序列化对象
+	refreshCRSSeed := utils.EncodeToBase64([]byte("refresh_crs_seed_32_bytes_long"))
 
 	// 生成伽罗瓦元素和CRPs
 	btpParametersLit := bootstrapping.ParametersLiteral{
@@ -87,6 +99,8 @@ func NewManager() (*Manager, error) {
 		paramsLiteral:   params.ParametersLiteral(),
 		globalCRP:       crp,
 		crpBytes:        utils.EncodeToBase64(crpRaw),
+		refreshCRS:      refreshCRS,
+		refreshCRSSeed:  refreshCRSSeed,
 		galEls:          galEls,
 		galoisCRPs:      galoisCRPs,
 		galoisCRPsBytes: galoisCRPsBytes,
@@ -96,8 +110,8 @@ func NewManager() (*Manager, error) {
 }
 
 // GetParams 获取所有参数
-func (pm *Manager) GetParams() (ckks.ParametersLiteral, string, []uint64, map[uint64]string, string) {
-	return pm.paramsLiteral, pm.crpBytes, pm.galEls, pm.galoisCRPsBytes, pm.rlkCRPBytes
+func (pm *Manager) GetParams() (ckks.ParametersLiteral, string, []uint64, map[uint64]string, string, string) {
+	return pm.paramsLiteral, pm.crpBytes, pm.galEls, pm.galoisCRPsBytes, pm.rlkCRPBytes, pm.refreshCRSSeed
 }
 
 // GetCKKSParams 获取CKKS参数
@@ -128,4 +142,14 @@ func (pm *Manager) GetGaloisCRPs() map[uint64]multiparty.GaloisKeyGenCRP {
 // GetRelinearizationCRP 获取重线性化密钥CRP
 func (pm *Manager) GetRelinearizationCRP() multiparty.RelinearizationKeyGenCRP {
 	return pm.rlkCRP
+}
+
+// GetRefreshCRS 获取刷新CRS
+func (pm *Manager) GetRefreshCRS() *sampling.KeyedPRNG {
+	return pm.refreshCRS
+}
+
+// GetRefreshCRSBytes 获取刷新CRS的base64编码
+func (pm *Manager) GetRefreshCRSBytes() string {
+	return pm.refreshCRSSeed
 }

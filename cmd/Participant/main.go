@@ -25,12 +25,17 @@ func main() {
 	participant.CoordinatorClient.SetParticipantID(participant.ID)
 
 	// 2. 获取CKKS参数、CRP和伽罗瓦密钥相关参数
-	params, crp, galEls, galoisCRPs, rlkCRP, err := participant.CoordinatorClient.GetParams()
+	params, crp, galEls, galoisCRPs, rlkCRP, refreshCRS, err := participant.CoordinatorClient.GetParams()
 	if err != nil {
 		panic(err)
 	}
 	participant.KeyManager.SetParams(*params)
 	participant.KeyManager.TotalGaloisKeys = len(galEls)
+
+	// 设置刷新服务的参数和CRS
+	participant.RefreshService.UpdateParams(*params)
+	participant.RefreshService.SetRefreshCRS(refreshCRS) // 使用从Coordinator获取的CRS
+
 	fmt.Printf("获取参数成功，伽罗瓦元素数量: %d\n", len(galEls))
 
 	// 3. 生成本地私钥和公钥份额

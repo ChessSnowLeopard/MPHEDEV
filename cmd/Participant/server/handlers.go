@@ -2,6 +2,7 @@ package server
 
 import (
 	"MPHEDev/cmd/Participant/crypto"
+	"MPHEDev/cmd/Participant/types"
 	"MPHEDev/cmd/Participant/utils"
 	"encoding/json"
 	"fmt"
@@ -14,13 +15,15 @@ import (
 type Handlers struct {
 	keyManager        *crypto.KeyManager
 	decryptionService *crypto.DecryptionService
+	refreshService    *crypto.RefreshService
 }
 
 // NewHandlers 创建新的处理器集合
-func NewHandlers(keyManager *crypto.KeyManager, decryptionService *crypto.DecryptionService) *Handlers {
+func NewHandlers(keyManager *crypto.KeyManager, decryptionService *crypto.DecryptionService, refreshService *crypto.RefreshService) *Handlers {
 	return &Handlers{
 		keyManager:        keyManager,
 		decryptionService: decryptionService,
+		refreshService:    refreshService,
 	}
 }
 
@@ -30,6 +33,7 @@ func (h *Handlers) GetHandlers() map[string]http.HandlerFunc {
 		"/health":          h.handleHealth,
 		"/bootstrap":       h.handleBootstrap,
 		"/partial_decrypt": h.handlePartialDecrypt,
+		"/partial_refresh": h.handlePartialRefresh,
 		"/keys/receive":    h.handleReceiveKeys,
 	}
 }
@@ -94,25 +98,89 @@ func (h *Handlers) handlePartialDecrypt(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// handleReceiveKeys 接收密钥处理器
+// handleReceiveKeys 处理接收密钥请求
 func (h *Handlers) handleReceiveKeys(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Params     interface{}   `json:"params"`
-		PubKey     interface{}   `json:"pub_key"`
-		RelineKey  interface{}   `json:"reline_key"`
-		GaloisKeys []interface{} `json:"galois_keys"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "请求解析失败", http.StatusBadRequest)
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// 这里应该实现密钥接收和设置逻辑
-	// 由于密钥结构复杂，这里只是示例框架
+	var keysData map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&keysData); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
 
+	// 解析并设置密钥
+	if pubKeyStr, ok := keysData["pub_key"].(string); ok {
+		pubKeyBytes, err := utils.DecodeFromBase64(pubKeyStr)
+		if err == nil {
+			var pubKey rlwe.PublicKey
+			if err := utils.DecodeShare(pubKeyBytes, &pubKey); err == nil {
+				h.keyManager.SetPublicKey(&pubKey)
+			}
+		}
+	}
+
+	if relineKeyStr, ok := keysData["reline_key"].(string); ok {
+		relineKeyBytes, err := utils.DecodeFromBase64(relineKeyStr)
+		if err == nil {
+			var relineKey rlwe.RelinearizationKey
+			if err := utils.DecodeShare(relineKeyBytes, &relineKey); err == nil {
+				h.keyManager.SetRelinearizationKey(&relineKey)
+			}
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "keys_received"})
+}
+
+// handlePartialRefresh 处理部分刷新请求
+func (h *Handlers) handlePartialRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req types.RefreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// 解析密文
+	ctBytes, err := utils.DecodeFromBase64(req.Ciphertext)
+	if err != nil {
+		http.Error(w, "Invalid ciphertext", http.StatusBadRequest)
+		return
+	}
+
+	var ct rlwe.Ciphertext
+	if err := utils.DecodeShare(ctBytes, &ct); err != nil {
+		http.Error(w, "Failed to decode ciphertext", http.StatusBadRequest)
+		return
+	}
+
+	// 生成刷新份额
+	share, err := h.refreshService.GenerateRefreshShare(&ct, req.TaskID)
+	if err != nil {
+		http.Error(w, "Failed to generate refresh share", http.StatusInternalServerError)
+		return
+	}
+
+	// 序列化份额
+	shareBytes, err := utils.EncodeShare(share)
+	if err != nil {
+		http.Error(w, "Failed to encode share", http.StatusInternalServerError)
+		return
+	}
+
+	shareB64 := utils.EncodeToBase64(shareBytes)
+
+	// 返回份额
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "keys_received",
+	json.NewEncoder(w).Encode(types.RefreshShareResponse{
+		Share: shareB64,
 	})
 }
