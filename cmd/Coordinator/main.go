@@ -26,9 +26,7 @@ func main() {
 		panic(err)
 	}
 
-	fmt.Printf("协调器启动，监听端口 8080，等待 %d 个参与方连接...\n", n)
-	fmt.Printf("最小参与方阈值: %d (%.1f%%)\n", coordinator.GetMinParticipants(), float64(coordinator.GetMinParticipants())/float64(n)*100)
-
+	fmt.Printf("最小参与方阈值: %d\n", coordinator.GetMinParticipants())
 	// 启动协调器
 	if err := coordinator.Start(); err != nil {
 		panic(err)

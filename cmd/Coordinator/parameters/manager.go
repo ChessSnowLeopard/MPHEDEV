@@ -2,10 +2,10 @@ package parameters
 
 import (
 	"MPHEDev/cmd/Coordinator/utils"
-	"MPHEDev/pkg/setup"
 
 	"github.com/tuneinsight/lattigo/v6/circuits/ckks/bootstrapping"
 	"github.com/tuneinsight/lattigo/v6/multiparty"
+	"github.com/tuneinsight/lattigo/v6/ring"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	lattigoUtils "github.com/tuneinsight/lattigo/v6/utils"
 	"github.com/tuneinsight/lattigo/v6/utils/sampling"
@@ -19,7 +19,6 @@ type Manager struct {
 	crpBytes      string
 
 	// 刷新协议相关
-	refreshCRS     *sampling.KeyedPRNG
 	refreshCRSSeed string // 使用种子而不是序列化对象
 
 	// 伽罗瓦密钥相关
@@ -32,9 +31,22 @@ type Manager struct {
 	rlkCRPBytes string
 }
 
+// 新增：本地CKKS参数初始化函数，替代setup.InitParameters
+func initCKKSParameters() (ckks.Parameters, error) {
+	return ckks.NewParametersFromLiteral(
+		ckks.ParametersLiteral{
+			LogN:            14,
+			LogQ:            []int{55, 45, 45, 45, 45, 45, 45, 45},
+			LogP:            []int{61, 61, 61},
+			LogDefaultScale: 45,
+			Xs:              ring.Ternary{H: 192},
+		},
+	)
+}
+
 // NewManager 创建新的参数管理器
 func NewManager() (*Manager, error) {
-	params, err := setup.InitParameters()
+	params, err := initCKKSParameters()
 	if err != nil {
 		return nil, err
 	}
@@ -51,12 +63,7 @@ func NewManager() (*Manager, error) {
 		return nil, err
 	}
 
-	// 生成刷新CRS
-	refreshCRS, err := sampling.NewKeyedPRNG([]byte("refresh_crs_seed_32_bytes_long"))
-	if err != nil {
-		return nil, err
-	}
-	// 使用种子而不是序列化对象
+	// 生成刷新CRS种子
 	refreshCRSSeed := utils.EncodeToBase64([]byte("refresh_crs_seed_32_bytes_long"))
 
 	// 生成伽罗瓦元素和CRPs
@@ -99,7 +106,6 @@ func NewManager() (*Manager, error) {
 		paramsLiteral:   params.ParametersLiteral(),
 		globalCRP:       crp,
 		crpBytes:        utils.EncodeToBase64(crpRaw),
-		refreshCRS:      refreshCRS,
 		refreshCRSSeed:  refreshCRSSeed,
 		galEls:          galEls,
 		galoisCRPs:      galoisCRPs,
@@ -142,11 +148,6 @@ func (pm *Manager) GetGaloisCRPs() map[uint64]multiparty.GaloisKeyGenCRP {
 // GetRelinearizationCRP 获取重线性化密钥CRP
 func (pm *Manager) GetRelinearizationCRP() multiparty.RelinearizationKeyGenCRP {
 	return pm.rlkCRP
-}
-
-// GetRefreshCRS 获取刷新CRS
-func (pm *Manager) GetRefreshCRS() *sampling.KeyedPRNG {
-	return pm.refreshCRS
 }
 
 // GetRefreshCRSBytes 获取刷新CRS的base64编码

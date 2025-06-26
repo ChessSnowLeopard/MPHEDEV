@@ -23,16 +23,22 @@ type Manager struct {
 
 // NewManager 创建新的参与者管理器
 func NewManager(expectedN int) *Manager {
-	// 计算最小参与方数量：至少需要2个参与方，或者期望数量的2/3
+	// 计算最小参与方数量：暂不考虑门限，直接使用参与方数量
 	minParticipants := expectedN
 
 	return &Manager{
-		participants:      make(map[int]*utils.ParticipantInfo),
-		participantURLs:   make(map[int]string),
-		nextID:            1,
-		heartbeats:        make(map[int]time.Time),
-		onlineTimeout:     10 * time.Second,
-		minParticipants:   minParticipants,
+		//记录每个参与方信息ID和状态
+		participants: make(map[int]*utils.ParticipantInfo),
+		//记录每个参与方URL
+		participantURLs: make(map[int]string),
+		//参与方ID
+		nextID: 1,
+		//记录每个参与方最近一次心跳时间
+		heartbeats: make(map[int]time.Time),
+		//心跳超时时间10s
+		onlineTimeout:   10 * time.Second,
+		minParticipants: minParticipants,
+		//心跳间隔5s
 		heartbeatInterval: 5 * time.Second,
 	}
 }
@@ -163,12 +169,13 @@ func (m *Manager) GetOnlineStatus() map[string]interface{} {
 
 // CleanupOfflineParticipants 清理离线参与方
 func (m *Manager) CleanupOfflineParticipants() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.Lock()         //获取写锁
+	defer m.mu.Unlock() //函数结束时释放写锁
 
 	now := time.Now()
 	for id, lastHeartbeat := range m.heartbeats {
 		if now.Sub(lastHeartbeat) > m.onlineTimeout {
+			//超过十秒没有心跳，则认为该参与方离线
 			delete(m.heartbeats, id)
 			fmt.Printf("清理离线参与方: %d\n", id)
 		}
@@ -177,6 +184,7 @@ func (m *Manager) CleanupOfflineParticipants() {
 
 // StartHeartbeatCleanup 启动心跳清理协程
 func (m *Manager) StartHeartbeatCleanup() {
+	// 启动心跳清理协程，创建定时器每m.heartbeatInterval秒执行一次
 	go func() {
 		ticker := time.NewTicker(m.heartbeatInterval)
 		defer ticker.Stop()

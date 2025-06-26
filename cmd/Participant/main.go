@@ -46,7 +46,7 @@ func main() {
 	}
 	participant.KeyManager.SetSecretKey(sk)
 
-	// 4. 编码并上传私钥
+	// 4. 编码并上传私钥  该方法仅用于测试环境
 	skB64, err := keyGen.EncodeSecretKey(sk)
 	if err != nil {
 		panic(err)

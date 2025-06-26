@@ -77,8 +77,8 @@ func (rs *RefreshService) RequestCollaborativeRefresh(onlinePeers map[int]string
 
 	fmt.Println("[协同刷新测试] 自动生成明文并加密...")
 
-	// 生成明文
-	slots := 8 // 测试用
+	//生成明文 仅用于测试环境
+	slots := 8
 	values := make([]complex128, slots)
 	for i := range values {
 		values[i] = complex(rand.Float64()*10, 0)

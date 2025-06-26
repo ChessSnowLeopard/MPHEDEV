@@ -21,7 +21,8 @@ type CoordinatorClient struct {
 	participantID int // 添加参与方ID字段
 }
 
-// NewCoordinatorClient 创建新的协调器客户端
+// 协调器客户端”其实是指参与方（Participant）
+// 用来和协调器（Coordinator）通信的一个客户端工具
 func NewCoordinatorClient(baseURL string, client *types.HTTPClient) *CoordinatorClient {
 	return &CoordinatorClient{
 		baseURL:       baseURL,

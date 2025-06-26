@@ -55,8 +55,8 @@ func (ds *DecryptionService) GeneratePartialDecryptShare(ciphertext *rlwe.Cipher
 func (ds *DecryptionService) RequestCollaborativeDecrypt(onlinePeers map[int]string, myID int) error {
 	fmt.Println("[协同解密] 自动生成明文并加密...")
 
-	// 生成明文
-	slots := 8 // 测试用
+	// 生成明文测试用，实际使用时传入待解密的密文
+	slots := 8
 	values := make([]complex128, slots)
 	for i := range values {
 		values[i] = complex(rand.Float64()*10, 0)

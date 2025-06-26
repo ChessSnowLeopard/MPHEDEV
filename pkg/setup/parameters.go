@@ -51,7 +51,8 @@ func InitializeSystem(N int) (ckks.Parameters, []*participant.Party, *participan
 	}
 	galEls := btpParams.GaloisElements(params)
 
-	// 创建云端实例
+	//这里是原框架下的部分，现在不需要云端，所以注释掉
+	/* 创建云端实例
 	cloud := participant.NewCloud(params, N, galEls, crs)
 
 	// 创建参与方实例
@@ -60,9 +61,9 @@ func InitializeSystem(N int) (ckks.Parameters, []*participant.Party, *participan
 
 	for i := range parties {
 		parties[i] = participant.NewParty(i, params, kg)
-	}
+	}*/
 
-	return params, parties, cloud, galEls, crs, nil
+	return params, nil, nil, galEls, crs, nil
 }
 
 // GenerateAggregatedSecretKey 生成聚合私钥（仅用于测试）

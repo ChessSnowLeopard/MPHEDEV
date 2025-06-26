@@ -8,8 +8,10 @@ import (
 
 // HTTPServer HTTP服务器
 type HTTPServer struct {
+	//Gin框架的路由引擎，可通过Router.POST()等方法注册API路由和处理函数
 	Router *gin.Engine
-	Port   string
+	//HTTP服务器监听的端口号，等待参与方HTTP请求
+	Port string
 }
 
 // NewHTTPServer 创建新的HTTP服务器
