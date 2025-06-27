@@ -25,14 +25,14 @@ type KeyGenerator struct {
 	rlkShare2 multiparty.RelinearizationKeyGenShare
 }
 
-func NewKeyGenerator(params ckks.Parameters, crp multiparty.PublicKeyGenCRP, galEls []uint64, galoisCRPs map[uint64]multiparty.GaloisKeyGenCRP, rlkCRP multiparty.RelinearizationKeyGenCRP) *KeyGenerator {
+func NewKeyGenerator(params ckks.Parameters, crp *multiparty.PublicKeyGenCRP, galEls []uint64, galoisCRPs map[uint64]multiparty.GaloisKeyGenCRP, rlkCRP *multiparty.RelinearizationKeyGenCRP) *KeyGenerator {
 	return &KeyGenerator{
 		params:      params,
-		crp:         crp,
+		crp:         *crp,
 		galEls:      galEls,
 		galoisCRPs:  galoisCRPs,
 		galoisProto: multiparty.NewGaloisKeyGenProtocol(params),
-		rlkCRP:      rlkCRP,
+		rlkCRP:      *rlkCRP,
 		rlkProto:    multiparty.NewRelinearizationKeyGenProtocol(params),
 	}
 }

@@ -29,6 +29,9 @@ type Manager struct {
 	// 重线性化密钥相关
 	rlkCRP      multiparty.RelinearizationKeyGenCRP
 	rlkCRPBytes string
+
+	// 数据集划分类型
+	dataSplitType string
 }
 
 // 新增：本地CKKS参数初始化函数，替代setup.InitParameters
@@ -45,7 +48,7 @@ func initCKKSParameters() (ckks.Parameters, error) {
 }
 
 // NewManager 创建新的参数管理器
-func NewManager() (*Manager, error) {
+func NewManager(dataSplitType string) (*Manager, error) {
 	params, err := initCKKSParameters()
 	if err != nil {
 		return nil, err
@@ -112,12 +115,13 @@ func NewManager() (*Manager, error) {
 		galoisCRPsBytes: galoisCRPsBytes,
 		rlkCRP:          rlkCRP,
 		rlkCRPBytes:     utils.EncodeToBase64(rlkCRPRaw),
+		dataSplitType:   dataSplitType,
 	}, nil
 }
 
 // GetParams 获取所有参数
-func (pm *Manager) GetParams() (ckks.ParametersLiteral, string, []uint64, map[uint64]string, string, string) {
-	return pm.paramsLiteral, pm.crpBytes, pm.galEls, pm.galoisCRPsBytes, pm.rlkCRPBytes, pm.refreshCRSSeed
+func (pm *Manager) GetParams() (ckks.ParametersLiteral, string, []uint64, map[uint64]string, string, string, string) {
+	return pm.paramsLiteral, pm.crpBytes, pm.galEls, pm.galoisCRPsBytes, pm.rlkCRPBytes, pm.refreshCRSSeed, pm.dataSplitType
 }
 
 // GetCKKSParams 获取CKKS参数
@@ -153,4 +157,9 @@ func (pm *Manager) GetRelinearizationCRP() multiparty.RelinearizationKeyGenCRP {
 // GetRefreshCRSBytes 获取刷新CRS的base64编码
 func (pm *Manager) GetRefreshCRSBytes() string {
 	return pm.refreshCRSSeed
+}
+
+// GetDataSplitType 获取数据集划分类型
+func (pm *Manager) GetDataSplitType() string {
+	return pm.dataSplitType
 }

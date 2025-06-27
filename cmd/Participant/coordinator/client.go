@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/tuneinsight/lattigo/v6/multiparty"
-	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
-	"github.com/tuneinsight/lattigo/v6/utils/sampling"
 )
 
 // CoordinatorClient 协调器客户端
@@ -53,73 +51,19 @@ func (cc *CoordinatorClient) Register() (*types.RegisterResponse, error) {
 }
 
 // GetParams 获取CKKS参数
-func (cc *CoordinatorClient) GetParams() (*ckks.Parameters, multiparty.PublicKeyGenCRP, []uint64, map[uint64]multiparty.GaloisKeyGenCRP, multiparty.RelinearizationKeyGenCRP, *sampling.KeyedPRNG, error) {
+func (cc *CoordinatorClient) GetParams() (*types.ParamsResponse, error) {
 	resp, err := cc.client.Client.Get(cc.baseURL + "/params/ckks")
 	if err != nil {
-		return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	var paramsResp types.ParamsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&paramsResp); err != nil {
-		return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
+	var params types.ParamsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&params); err != nil {
+		return nil, err
 	}
 
-	// 解析参数
-	params, err := ckks.NewParametersFromLiteral(paramsResp.Params)
-	if err != nil {
-		return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
-	}
-
-	// 解析CRP
-	crpBytes, err := utils.DecodeFromBase64(paramsResp.Crp)
-	if err != nil {
-		return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
-	}
-	var crp multiparty.PublicKeyGenCRP
-	if err := utils.DecodeShare(crpBytes, &crp); err != nil {
-		return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
-	}
-
-	// 解析伽罗瓦元素
-	galEls := paramsResp.GalEls
-
-	// 解析伽罗瓦CRPs
-	galoisCRPs := make(map[uint64]multiparty.GaloisKeyGenCRP)
-	for galEl, crpStr := range paramsResp.GaloisCRPs {
-		crpBytes, err := utils.DecodeFromBase64(crpStr)
-		if err != nil {
-			return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
-		}
-		var galoisCRP multiparty.GaloisKeyGenCRP
-		if err := utils.DecodeShare(crpBytes, &galoisCRP); err != nil {
-			return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
-		}
-		galoisCRPs[galEl] = galoisCRP
-	}
-
-	// 解析重线性化CRP
-	rlkCRPBytes, err := utils.DecodeFromBase64(paramsResp.RlkCRP)
-	if err != nil {
-		return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
-	}
-	var rlkCRP multiparty.RelinearizationKeyGenCRP
-	if err := utils.DecodeShare(rlkCRPBytes, &rlkCRP); err != nil {
-		return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
-	}
-
-	// 解析刷新CRS
-	refreshCRSBytes, err := utils.DecodeFromBase64(paramsResp.RefreshCRS)
-	if err != nil {
-		return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
-	}
-	// 从种子重新生成KeyedPRNG
-	refreshCRS, err := sampling.NewKeyedPRNG(refreshCRSBytes)
-	if err != nil {
-		return nil, multiparty.PublicKeyGenCRP{}, nil, nil, multiparty.RelinearizationKeyGenCRP{}, nil, err
-	}
-
-	return &params, crp, galEls, galoisCRPs, rlkCRP, refreshCRS, nil
+	return &params, nil
 }
 
 // UploadPublicKeyShare 上传公钥份额

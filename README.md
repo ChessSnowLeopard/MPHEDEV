@@ -31,5 +31,3 @@ Design and user documents (in addition to your godoc generated documentation).
 
 ### Others
 Note that datasets should not be stored in the github project, it is encouraged to commit codes for drawing datasets on-the-fly.  
-
-分支测试
