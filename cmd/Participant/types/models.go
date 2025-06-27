@@ -27,12 +27,13 @@ type RegisterResponse struct {
 
 // ParamsResponse 参数响应
 type ParamsResponse struct {
-	Params     ckks.ParametersLiteral `json:"params"`
-	Crp        string                 `json:"crp"`
-	GalEls     []uint64               `json:"gal_els"`
-	GaloisCRPs map[uint64]string      `json:"galois_crps"`
-	RlkCRP     string                 `json:"rlk_crp"`
-	RefreshCRS string                 `json:"refresh_crs"`
+	Params        ckks.ParametersLiteral `json:"params"`
+	Crp           string                 `json:"crp"`
+	GalEls        []uint64               `json:"gal_els"`
+	GaloisCRPs    map[string]string      `json:"galois_crps"`
+	RlkCRP        string                 `json:"rlk_crp"`
+	RefreshCRS    string                 `json:"refresh_crs"`
+	DataSplitType string                 `json:"data_split_type"` // 数据集划分方式
 }
 
 // StatusResponse 状态响应

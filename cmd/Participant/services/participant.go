@@ -6,9 +6,15 @@ import (
 	"MPHEDev/cmd/Participant/network"
 	"MPHEDev/cmd/Participant/server"
 	"MPHEDev/cmd/Participant/types"
+	"encoding/csv"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
+
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
 // Participant 重构后的参与方主结构体
@@ -33,6 +39,11 @@ type Participant struct {
 	// 状态管理
 	Ready   bool
 	ReadyCh chan struct{}
+
+	// 数据集相关
+	Images    [][]float64 // 载入的图像数据
+	Labels    []int       // 载入的标签数据
+	DataSplit string      // 数据分片类型：vertical 或 horizontal
 }
 
 // NewParticipant 创建新的参与方实例
@@ -103,6 +114,21 @@ func (p *Participant) Register(coordinatorURL string) error {
 
 	// 11. 启动在线状态监控
 	p.HeartbeatManager.StartOnlineStatusMonitor()
+
+	// 12. 获取参数并设置数据集划分方式
+	paramsResp, err := p.CoordinatorClient.GetParams()
+	if err != nil {
+		return fmt.Errorf("获取参数失败: %v", err)
+	}
+
+	// 设置数据集划分方式
+	p.DataSplit = paramsResp.DataSplitType
+	fmt.Printf("参与方 %d 接收到数据集划分方式: %s\n", p.ID, p.DataSplit)
+
+	// 13. 载入本地数据集
+	if err := p.LoadDataset(); err != nil {
+		return fmt.Errorf("载入数据集失败: %v", err)
+	}
 
 	return nil
 }
@@ -223,4 +249,150 @@ func (p *Participant) RunMainLoop() {
 			fmt.Println("无效选项，请重新输入。")
 		}
 	}
+}
+
+// LoadDataset 载入本地数据集分片
+func (p *Participant) LoadDataset() error {
+	// 构建数据目录路径 - 相对于项目根目录
+	dataDir := fmt.Sprintf("../../test/dataPartial/%s", p.DataSplit)
+
+	// 自动检测数据分片文件
+	splitID := fmt.Sprintf("train_split_%03d", p.ID)
+	imagesPath := fmt.Sprintf("%s/%s_images.csv", dataDir, splitID)
+	labelsPath := fmt.Sprintf("%s/%s_labels.csv", dataDir, splitID)
+
+	fmt.Printf("参与方 %d 尝试载入数据集: %s\n", p.ID, imagesPath)
+
+	// 检查文件是否存在
+	if _, err := os.Stat(imagesPath); os.IsNotExist(err) {
+		return fmt.Errorf("图像文件不存在: %s", imagesPath)
+	}
+	if _, err := os.Stat(labelsPath); os.IsNotExist(err) {
+		return fmt.Errorf("标签文件不存在: %s", labelsPath)
+	}
+
+	// 载入图像数据
+	images, err := p.loadImagesCSV(imagesPath)
+	if err != nil {
+		return fmt.Errorf("载入图像数据失败: %v", err)
+	}
+
+	// 载入标签数据
+	labels, err := p.loadLabelsCSV(labelsPath)
+	if err != nil {
+		return fmt.Errorf("载入标签数据失败: %v", err)
+	}
+
+	p.Images = images
+	p.Labels = labels
+
+	fmt.Printf("参与方 %d 数据集载入完成: %d 个样本, %d 个特征\n",
+		p.ID, len(images), len(images[0]))
+
+	return nil
+}
+
+// loadImagesCSV 载入CSV格式的图像数据
+func (p *Participant) loadImagesCSV(filepath string) ([][]float64, error) {
+	file, err := os.Open(filepath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	images := make([][]float64, len(records))
+	for i, record := range records {
+		images[i] = make([]float64, len(record))
+		for j, val := range record {
+			images[i][j], err = strconv.ParseFloat(val, 64)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return images, nil
+}
+
+// loadLabelsCSV 载入CSV格式的标签数据
+func (p *Participant) loadLabelsCSV(filepath string) ([]int, error) {
+	file, err := os.Open(filepath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	labels := make([]int, len(records))
+	for i, record := range records {
+		labels[i], err = strconv.Atoi(record[0])
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return labels, nil
+}
+
+// EncryptDataset 加密本地数据集
+func (p *Participant) EncryptDataset() error {
+	if !p.KeyManager.IsReady() {
+		return fmt.Errorf("密钥未准备就绪，无法加密数据")
+	}
+
+	if len(p.Images) == 0 {
+		return fmt.Errorf("数据集未载入，请先调用LoadDataset")
+	}
+
+	fmt.Printf("参与方 %d 开始加密数据集...\n", p.ID)
+
+	// 获取加密所需的组件
+	params := p.KeyManager.GetParams()
+	pubKey := p.KeyManager.GetPublicKey()
+	encoder := ckks.NewEncoder(params)
+	encryptor := ckks.NewEncryptor(params, pubKey)
+
+	// 加密每个样本
+	encryptedImages := make([]*rlwe.Ciphertext, len(p.Images))
+	for i, image := range p.Images {
+		// 将图像数据转换为复数向量
+		values := make([]complex128, len(image))
+		for j, pixel := range image {
+			// 归一化像素值到[0,1]范围
+			values[j] = complex(pixel/255.0, 0)
+		}
+
+		// 编码
+		pt := ckks.NewPlaintext(params, params.MaxLevel())
+		if err := encoder.Encode(values, pt); err != nil {
+			return fmt.Errorf("编码失败: %v", err)
+		}
+
+		// 加密
+		ct, err := encryptor.EncryptNew(pt)
+		if err != nil {
+			return fmt.Errorf("加密失败: %v", err)
+		}
+
+		encryptedImages[i] = ct
+
+		if (i+1)%100 == 0 {
+			fmt.Printf("参与方 %d 已加密 %d/%d 个样本\n", p.ID, i+1, len(p.Images))
+		}
+	}
+
+	fmt.Printf("参与方 %d 数据集加密完成: %d 个加密样本\n", p.ID, len(encryptedImages))
+
+	return nil
 }
