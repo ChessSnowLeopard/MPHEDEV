@@ -396,3 +396,96 @@ func (p *Participant) EncryptDataset() error {
 
 	return nil
 }
+
+// 5：密文数据流转-待测试
+// 获取加密后的特征密文
+func (p *Participant) GetEncryptedFeature(sampleIdx int) *rlwe.Ciphertext {
+	params := p.KeyManager.GetParams()
+	pubKey := p.KeyManager.GetPublicKey()
+	encoder := ckks.NewEncoder(params)
+	encryptor := ckks.NewEncryptor(params, pubKey)
+	features := p.Images[sampleIdx]
+	values := make([]complex128, len(features))
+	for i, v := range features {
+		values[i] = complex(v/255.0, 0)
+	}
+	pt := ckks.NewPlaintext(params, params.MaxLevel())
+	encoder.Encode(values, pt)
+	ct, _ := encryptor.EncryptNew(pt)
+	return ct
+}
+
+// 获取加密后的标签密文
+func (p *Participant) GetEncryptedLabel(sampleIdx int, numClasses int) *rlwe.Ciphertext {
+	params := p.KeyManager.GetParams()
+	pubKey := p.KeyManager.GetPublicKey()
+	encoder := ckks.NewEncoder(params)
+	encryptor := ckks.NewEncryptor(params, pubKey)
+	label := p.Labels[sampleIdx]
+	onehot := make([]complex128, numClasses)
+	onehot[label] = 1
+	pt := ckks.NewPlaintext(params, params.MaxLevel())
+	encoder.Encode(onehot, pt)
+	ct, _ := encryptor.EncryptNew(pt)
+	return ct
+}
+
+// 收集所有参与方的特征密文
+func (p *Participant) CollectFeatureCiphertexts(peers []*Participant, sampleIdx int) map[int]*rlwe.Ciphertext {
+	received := make(map[int]*rlwe.Ciphertext)
+	for _, peer := range peers {
+		if peer.ID == p.ID {
+			continue
+		}
+		ct := peer.GetEncryptedFeature(sampleIdx)
+		received[peer.ID] = ct
+		fmt.Printf("[Participant %d] 收集到参与方 %d 的特征密文\n", p.ID, peer.ID)
+	}
+	fmt.Printf("[Participant %d] 当前已收集特征密文数量: %d\n", p.ID, len(received))
+	return received
+}
+
+// 发送特征和标签密文到输入层和输出层
+func (p *Participant) SendFeatureAndLabelCiphertexts(inputLayer, outputLayer *Participant, sampleIdx int, numClasses int) {
+	featureCt := p.GetEncryptedFeature(sampleIdx)
+	labelCt := p.GetEncryptedLabel(sampleIdx, numClasses)
+	fmt.Printf("[Participant %d] 发送特征密文到输入层 %d\n", p.ID, inputLayer.ID)
+	inputLayer.ReceiveFeatureCiphertext(p.ID, featureCt)
+	fmt.Printf("[Participant %d] 发送标签密文到输出层 %d\n", p.ID, outputLayer.ID)
+	outputLayer.ReceiveLabelCiphertext(p.ID, labelCt)
+}
+
+// 收集所有参与方的标签密文
+func (p *Participant) CollectLabelCiphertexts(peers []*Participant, sampleIdx int, numClasses int) map[int]*rlwe.Ciphertext {
+	received := make(map[int]*rlwe.Ciphertext)
+	for _, peer := range peers {
+		if peer.ID == p.ID {
+			continue
+		}
+		ct := peer.GetEncryptedLabel(sampleIdx, numClasses)
+		received[peer.ID] = ct
+		fmt.Printf("[Participant %d] 收集到参与方 %d 的标签密文\n", p.ID, peer.ID)
+	}
+	fmt.Printf("[Participant %d] 当前已收集标签密文数量: %d\n", p.ID, len(received))
+	return received
+}
+
+// 接收特征密文
+func (p *Participant) ReceiveFeatureCiphertext(fromID int, ct *rlwe.Ciphertext) {
+	if p.PeerManager == nil {
+		fmt.Printf("[Participant %d] PeerManager 未初始化，无法缓存特征密文\n", p.ID)
+		return
+	}
+	// 这里可扩展为缓存到PeerManager或本地map
+	fmt.Printf("[Participant %d] 收到来自参与方 %d 的特征密文\n", p.ID, fromID)
+}
+
+// 接收标签密文
+func (p *Participant) ReceiveLabelCiphertext(fromID int, ct *rlwe.Ciphertext) {
+	if p.PeerManager == nil {
+		fmt.Printf("[Participant %d] PeerManager 未初始化，无法缓存标签密文\n", p.ID)
+		return
+	}
+	// 这里可扩展为缓存到PeerManager或本地map
+	fmt.Printf("[Participant %d] 收到来自参与方 %d 的标签密文\n", p.ID, fromID)
+}
