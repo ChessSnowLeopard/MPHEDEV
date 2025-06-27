@@ -19,8 +19,11 @@ func main() {
 	// 创建参与方实例
 	participant := services.NewParticipant()
 
+	var status map[string]interface{}
+	var err error
+
 	// 1. 注册并获取参数
-	if err := participant.Register(coordinatorURL); err != nil {
+	if err = participant.Register(coordinatorURL); err != nil {
 		panic(err)
 	}
 	fmt.Printf("注册成功，ID: %d\n", participant.ID)
@@ -281,4 +284,46 @@ func main() {
 
 	// 14. 运行主循环
 	participant.RunMainLoop()
+
+	// 15. 获取总参与方数和所有在线参与方，进行密文流转
+	status, err = participant.HeartbeatManager.GetOnlineStatus()
+	if err != nil {
+		fmt.Println("获取在线状态失败，无法进行密文流转：", err)
+		return
+	}
+	totalCountVal, ok := status["total_count"]
+	if !ok || totalCountVal == nil {
+		fmt.Println("在线状态信息不完整: total_count 字段缺失")
+		return
+	}
+	totalParticipants := int(totalCountVal.(float64))
+
+	// 获取所有在线参与方（包括自己）
+	onlinePeers := participant.HeartbeatManager.GetOnlinePeers()
+	peers := make([]*services.Participant, 0, len(onlinePeers))
+	// 这里只能加入自己，因为本地只维护了本参与方对象
+	peers = append(peers, participant)
+
+	// 询问用户是否要添加远程参与方
+	var addRemote string
+	fmt.Print("是否要将密文发送给其他机器？(y/n): ")
+	fmt.Scanln(&addRemote)
+	if addRemote == "y" || addRemote == "Y" {
+		var remoteID int
+		var remotePort int
+		fmt.Print("请输入远程参与方ID: ")
+		fmt.Scanln(&remoteID)
+		fmt.Print("请输入远程机器HTTP端口: ")
+		fmt.Scanln(&remotePort)
+
+		// 构造远程Participant对象（仅用于流转演示，实际应通过RPC/HTTP实现密文发送）
+		remoteParticipant := services.NewParticipant()
+		remoteParticipant.ID = remoteID
+		remoteParticipant.Port = remotePort
+		// 这里可根据需要设置更多字段，如KeyManager等
+		peers = append(peers, remoteParticipant)
+	}
+
+	// 演示调用：sampleIdx=0, numClasses=10
+	participant.RunCiphertextFlow(totalParticipants, peers, 0, 10)
 }

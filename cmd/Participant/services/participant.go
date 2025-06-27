@@ -39,6 +39,7 @@ type Participant struct {
 	// 状态管理
 	Ready   bool
 	ReadyCh chan struct{}
+	State   string // 当前阶段状态
 
 	// 数据集相关
 	Images    [][]float64 // 载入的图像数据
@@ -488,4 +489,63 @@ func (p *Participant) ReceiveLabelCiphertext(fromID int, ct *rlwe.Ciphertext) {
 	}
 	// 这里可扩展为缓存到PeerManager或本地map
 	fmt.Printf("[Participant %d] 收到来自参与方 %d 的标签密文\n", p.ID, fromID)
+}
+
+// SetState 设置当前状态
+func (p *Participant) SetState(state string) {
+	p.State = state
+	fmt.Printf("[Participant %d] 状态切换为: %s\n", p.ID, state)
+}
+
+// GetRole 获取当前参与方角色
+func (p *Participant) GetRole(totalParticipants int) string {
+	if p.ID == 1 {
+		return "input"
+	} else if p.ID == totalParticipants {
+		return "output"
+	}
+	return "hidden"
+}
+
+// RunCiphertextFlow 执行密文数据流转主流程
+func (p *Participant) RunCiphertextFlow(totalParticipants int, peers []*Participant, sampleIdx int, numClasses int) {
+	role := p.GetRole(totalParticipants)
+	p.SetState("ciphertext_flow")
+
+	switch role {
+	case "input":
+		fmt.Printf("[Participant %d] 作为输入层，收集所有参与方的特征密文\n", p.ID)
+		featureCts := make(map[int]*rlwe.Ciphertext)
+		for _, peer := range peers {
+			ct := peer.GetEncryptedFeature(sampleIdx)
+			featureCts[peer.ID] = ct
+			fmt.Printf("[Participant %d] 收到参与方 %d 的特征密文\n", p.ID, peer.ID)
+		}
+		fmt.Printf("[Participant %d] 收集特征密文完成，共 %d 个\n", p.ID, len(featureCts))
+	case "hidden":
+		fmt.Printf("[Participant %d] 作为隐藏层，发送特征和标签密文到输入层和输出层\n", p.ID)
+		// 找到输入层和输出层
+		var inputLayer, outputLayer *Participant
+		for _, peer := range peers {
+			if peer.ID == 1 {
+				inputLayer = peer
+			}
+			if peer.ID == totalParticipants {
+				outputLayer = peer
+			}
+		}
+		if inputLayer != nil && outputLayer != nil {
+			p.SendFeatureAndLabelCiphertexts(inputLayer, outputLayer, sampleIdx, numClasses)
+		}
+	case "output":
+		fmt.Printf("[Participant %d] 作为输出层，收集所有参与方的标签密文\n", p.ID)
+		labelCts := make(map[int]*rlwe.Ciphertext)
+		for _, peer := range peers {
+			ct := peer.GetEncryptedLabel(sampleIdx, numClasses)
+			labelCts[peer.ID] = ct
+			fmt.Printf("[Participant %d] 收到参与方 %d 的标签密文\n", p.ID, peer.ID)
+		}
+		fmt.Printf("[Participant %d] 收集标签密文完成，共 %d 个\n", p.ID, len(labelCts))
+	}
+	p.SetState("ciphertext_flow_done")
 }
