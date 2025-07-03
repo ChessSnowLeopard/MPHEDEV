@@ -1,7 +1,6 @@
 package test
 
 import (
-	_ "MPHEDev/pkg/participant"
 	"fmt"
 	"os"
 

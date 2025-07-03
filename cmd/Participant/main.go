@@ -1,76 +1,108 @@
 package main
 
 import (
-	"MPHEDev/cmd/Participant/services"
-	"MPHEDev/cmd/Participant/utils"
+	"MPHEDev/pkg/core/participant/services"
+	"MPHEDev/pkg/core/participant/utils"
+	"bufio"
 	"fmt"
-	"strconv"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"github.com/tuneinsight/lattigo/v6/multiparty"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
-	"github.com/tuneinsight/lattigo/v6/utils/sampling"
 )
 
+// getUserInput 获取用户输入
+func getUserInput(prompt string) string {
+	fmt.Print(prompt)
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	return strings.TrimSpace(input)
+}
+
 func main() {
-	coordinatorURL := "http://localhost:8080"
+	fmt.Println("参与方启动中...")
 
 	// 创建参与方实例
 	participant := services.NewParticipant()
+
+	// 获取本机IP并显示
+	localIP, err := utils.GetLocalIP()
+	if err != nil {
+		fmt.Printf("获取本机IP失败: %v\n", err)
+		panic(err)
+	}
+	fmt.Printf("本机IP: %s\n", localIP)
+
+	// 获取协调器IP
+	coordinatorIP := getUserInput("请输入协调器IP地址: ")
+	if coordinatorIP == "" {
+		fmt.Println("协调器IP地址不能为空")
+		panic("协调器IP地址不能为空")
+	}
+
+	// 设置协调器URL
+	coordinatorURL := fmt.Sprintf("http://%s:8080", coordinatorIP)
 
 	// 1. 注册并获取参数
 	if err := participant.Register(coordinatorURL); err != nil {
 		panic(err)
 	}
-	fmt.Printf("注册成功，ID: %d\n", participant.ID)
 
 	// 设置参与方ID到客户端
 	participant.CoordinatorClient.SetParticipantID(participant.ID)
 
+	// 捕获Ctrl+C信号，自动注销
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		fmt.Println("\n检测到退出信号，正在注销...")
+		if err := participant.Unregister(); err != nil {
+			fmt.Printf("注销失败: %v\n", err)
+		} else {
+			fmt.Println("注销成功")
+		}
+		os.Exit(0)
+	}()
+
 	// 2. 获取CKKS参数、CRP和伽罗瓦密钥相关参数
-	fmt.Println("正在获取参数...")
 	params, err := participant.CoordinatorClient.GetParams()
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("参数获取成功，开始解析...")
 
 	// 将 ParamsResponse 转换为 ckks.Parameters
 	ckksParams, err := ckks.NewParametersFromLiteral(params.Params)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("CKKS参数解析成功...")
 
 	participant.KeyManager.SetParams(ckksParams)
 	participant.KeyManager.TotalGaloisKeys = len(params.GalEls)
-	fmt.Println("参数设置成功...")
 
 	// 设置刷新服务的参数和CRS
 	participant.RefreshService.UpdateParams(ckksParams)
-	fmt.Println("刷新服务参数更新成功...")
 
-	// 解码 RefreshCRS
-	fmt.Println("开始解码 RefreshCRS...")
-	refreshCRSBytes, err := utils.DecodeFromBase64(params.RefreshCRS)
+	// 使用统一的CRS种子设置刷新服务
+	commonCRSSeedBytes, err := utils.DecodeFromBase64(params.CommonCRSSeed)
 	if err != nil {
 		panic(err)
 	}
-	// 从种子重新生成 KeyedPRNG
-	refreshCRS, err := sampling.NewKeyedPRNG(refreshCRSBytes)
-	if err != nil {
-		panic(err)
-	}
-	participant.RefreshService.SetRefreshCRS(refreshCRS)
-	fmt.Println("RefreshCRS 生成成功...")
-
-	fmt.Printf("获取参数成功，伽罗瓦元素数量: %d\n", len(params.GalEls))
+	participant.RefreshService.SetCommonCRSSeed(commonCRSSeedBytes)
 
 	// 3. 生成本地私钥和公钥份额
-	fmt.Println("开始生成本地私钥和公钥份额...")
-	// 解码 CRP
-	fmt.Println("解码 CRP...")
+
+	// 根据统一CRS种子生成所有CRP
+	if err := participant.GenerateAllCRPs(params); err != nil {
+		panic(err)
+	}
+
+	// 解码生成的CRP
 	crpBytes, err := utils.DecodeFromBase64(params.Crp)
 	if err != nil {
 		panic(err)
@@ -79,16 +111,10 @@ func main() {
 	if err := utils.DecodeShare(crpBytes, &crp); err != nil {
 		panic(err)
 	}
-	fmt.Println("CRP 解码成功...")
 
-	// 解码 GaloisCRPs
-	fmt.Println("解码 GaloisCRPs...")
+	// 解码生成的GaloisCRPs
 	galoisCRPs := make(map[uint64]multiparty.GaloisKeyGenCRP)
-	for galElStr, crpStr := range params.GaloisCRPs {
-		galEl, err := strconv.ParseUint(galElStr, 10, 64)
-		if err != nil {
-			panic(fmt.Errorf("无法解析伽罗瓦元素: %s", galElStr))
-		}
+	for galEl, crpStr := range params.GaloisCRPs {
 		crpBytes, err := utils.DecodeFromBase64(crpStr)
 		if err != nil {
 			panic(err)
@@ -99,10 +125,8 @@ func main() {
 		}
 		galoisCRPs[galEl] = galoisCRP
 	}
-	fmt.Println("GaloisCRPs 解码成功...")
 
-	// 解码 RlkCRP
-	fmt.Println("解码 RlkCRP...")
+	// 解码生成的RlkCRP
 	rlkCRPBytes, err := utils.DecodeFromBase64(params.RlkCRP)
 	if err != nil {
 		panic(err)
@@ -111,9 +135,7 @@ func main() {
 	if err := utils.DecodeShare(rlkCRPBytes, &rlkCRP); err != nil {
 		panic(err)
 	}
-	fmt.Println("RlkCRP 解码成功...")
 
-	fmt.Println("创建密钥生成器...")
 	keyGen := services.NewKeyGenerator(ckksParams, &crp, params.GalEls, galoisCRPs, &rlkCRP)
 	sk, share, err := keyGen.GenerateKeys()
 	if err != nil {
@@ -129,7 +151,6 @@ func main() {
 	if err := participant.CoordinatorClient.UploadSecretKey(skB64); err != nil {
 		panic(err)
 	}
-	fmt.Println("上传私钥成功")
 
 	// 5. 编码并上传公钥份额
 	shareB64, err := keyGen.EncodePublicKeyShare(share)
@@ -139,10 +160,8 @@ func main() {
 	if err := participant.CoordinatorClient.UploadPublicKeyShare(shareB64); err != nil {
 		panic(err)
 	}
-	fmt.Println("上传公钥份额成功")
 
 	// 6. 生成并上传伽罗瓦密钥份额
-	fmt.Println("开始生成伽罗瓦密钥份额...")
 	galoisShares, err := keyGen.GenerateGaloisKeyShares()
 	if err != nil {
 		panic(err)
@@ -157,10 +176,8 @@ func main() {
 			panic(err)
 		}
 	}
-	fmt.Printf("✓ 所有 %d 个伽罗瓦密钥份额上传完成\n", len(galoisShares))
 
 	// 7. 生成并上传重线性化密钥第一轮份额
-	fmt.Println("开始生成重线性化密钥第一轮份额...")
 	if err := keyGen.GenerateRelinearizationKeyRound1(); err != nil {
 		panic(err)
 	}
@@ -171,19 +188,15 @@ func main() {
 	if err := participant.CoordinatorClient.UploadRelinearizationKeyShare(1, rlkShare1B64); err != nil {
 		panic(err)
 	}
-	fmt.Println("上传重线性化密钥第一轮份额成功")
 
 	// 8. 等待第一轮聚合完成，然后获取聚合结果
-	fmt.Println("等待第一轮聚合完成...")
 	for {
 		status, err := participant.CoordinatorClient.PollStatus()
 		if err != nil {
-			fmt.Println("状态查询失败:", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		if status.RlkRound1Ready {
-			fmt.Println("第一轮聚合完成，开始第二轮...")
 			break
 		}
 		time.Sleep(2 * time.Second)
@@ -204,27 +217,22 @@ func main() {
 	if err := participant.CoordinatorClient.UploadRelinearizationKeyShare(2, rlkShare2B64); err != nil {
 		panic(err)
 	}
-	fmt.Println("上传重线性化密钥第二轮份额成功")
 
 	// 10. 等待所有密钥生成完成
-	fmt.Println("等待所有密钥生成完成...")
 	for {
 		status, err := participant.CoordinatorClient.PollStatus()
 		if err != nil {
-			fmt.Println("状态查询失败:", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		if status.GlobalPKReady && status.SkAggReady && status.RlkReady &&
 			status.CompletedGaloisKeys == status.TotalGaloisKeys {
-			fmt.Println("所有密钥生成完成！")
 			break
 		}
 		time.Sleep(2 * time.Second)
 	}
 
 	// 11. 获取聚合后的密钥
-	fmt.Println("获取聚合后的密钥...")
 	keys, err := participant.CoordinatorClient.GetAggregatedKeys()
 	if err != nil {
 		panic(err)
@@ -267,18 +275,26 @@ func main() {
 	}
 	participant.KeyManager.SetGaloisKeys(galoisKeys)
 
-	fmt.Println("所有密钥设置完成！")
-
-	// 12. 加密数据集
-	fmt.Println("开始加密数据集...")
-	if err := participant.EncryptDataset(); err != nil {
+	// 12. 获取在线成员列表
+	if err := participant.UpdateOnlineParticipants(); err != nil {
 		panic(err)
 	}
-	fmt.Println("数据集加密完成！")
 
-	// 13. 通知准备就绪
-	close(participant.ReadyCh)
+	fmt.Printf("参与方 %d 启动成功\n", participant.ID)
 
-	// 14. 运行主循环
+	// 13. 载入数据集
+	if err := participant.LoadDataset(); err != nil {
+		panic(err)
+	}
+
+	// 14. 加密并分发数据集
+	if err := participant.EncryptAndDistributeDataset(); err != nil {
+		panic(err)
+	}
+
+	// 15. 等待数据分发完成
+	<-participant.ReadyCh
+
+	// 16. 运行主循环
 	participant.RunMainLoop()
 }
