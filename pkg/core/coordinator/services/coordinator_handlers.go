@@ -410,3 +410,63 @@ func (c *Coordinator) postJSON(url string, data interface{}) error {
 
 	return nil
 }
+
+// ==================== 协调器初始化接口和中间件 ====================
+
+type InitRequest struct {
+	NumParticipants int    `json:"num_participants"`
+	DataSplitType   string `json:"data_split_type"` // 可选，若有数据划分类型
+}
+
+var (
+	globalCoordinator *Coordinator
+)
+
+// InitHandler 初始化协调器
+func InitHandler(ctx *gin.Context) {
+	var req InitRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil || req.NumParticipants <= 0 {
+		ctx.JSON(400, gin.H{"error": "invalid num_participants"})
+		return
+	}
+	// 优先从 Gin Context 读取 data_split_type（main.go 注入），否则用请求体里的
+	dataSplitType := req.DataSplitType
+	if v, ok := ctx.Get("data_split_type"); ok {
+		if s, ok2 := v.(string); ok2 && s != "" {
+			dataSplitType = s
+		}
+	}
+	// 创建协调器实例
+	coordinator, err := NewCoordinator(req.NumParticipants, dataSplitType)
+	if err != nil {
+		ctx.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	globalCoordinator = coordinator
+	go globalCoordinator.Start() // 启动后台服务
+	ctx.JSON(200, gin.H{"status": "ok"})
+}
+
+// RequireCoordinator Gin 中间件，校验 globalCoordinator 是否已初始化
+func RequireCoordinator() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		if globalCoordinator == nil {
+			ctx.JSON(400, gin.H{"error": "Coordinator not initialized"})
+			ctx.Abort()
+			return
+		}
+		ctx.Next()
+	}
+}
+
+func PostPublicKeyHandler(ctx *gin.Context) {
+	globalCoordinator.postPublicKeyHandler(ctx)
+}
+
+func PostSecretKeyHandler(ctx *gin.Context) {
+	globalCoordinator.postSecretKeyHandler(ctx)
+}
+
+func GetSetupStatusHandler(ctx *gin.Context) {
+	globalCoordinator.getSetupStatusHandler(ctx)
+}

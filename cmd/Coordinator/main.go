@@ -5,47 +5,54 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
+var globalDataSplitType string
+
 func main() {
-	fmt.Print("请输入参与方数量: ")
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	line = strings.TrimSpace(line)
-
-	n, err := strconv.Atoi(line)
-	if err != nil || n <= 0 {
-		fmt.Println("输入有误，使用默认值3")
-		n = 3
-	}
-
-	// 选择数据集划分方式
+	// 1. 启动时命令行选择数据集划分方式
 	fmt.Print("请选择数据集划分方式 (horizontal/vertical): ")
+	reader := bufio.NewReader(os.Stdin)
 	splitLine, _ := reader.ReadString('\n')
 	splitLine = strings.TrimSpace(splitLine)
-
-	dataSplitType := "horizontal" // 默认值
+	globalDataSplitType = "horizontal" // 默认值
 	if splitLine == "horizontal" || splitLine == "vertical" {
-		dataSplitType = splitLine
+		globalDataSplitType = splitLine
 	} else {
 		fmt.Println("输入有误，使用默认值horizontal")
 	}
 
-	coordinator, err := services.NewCoordinator(n, dataSplitType)
-	if err != nil {
-		panic(err)
+	r := gin.Default()
+	// 允许跨域
+	r.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	})
+
+	// 包装InitHandler，将命令行选定的数据集划分方式注入
+	r.POST("/init", func(ctx *gin.Context) {
+		ctx.Set("data_split_type", globalDataSplitType)
+		services.InitHandler(ctx)
+	})
+
+	protected := r.Group("/", services.RequireCoordinator())
+	{
+		protected.POST("/keys/public", services.PostPublicKeyHandler)
+		protected.POST("/keys/secret", services.PostSecretKeyHandler)
+		protected.GET("/setup/status", services.GetSetupStatusHandler)
+		// ...其他依赖 Coordinator 的接口...
 	}
 
-	fmt.Printf("协调器配置完成\n")
-	fmt.Printf("预期参与方数量: %d\n", n)
-	fmt.Printf("数据集划分方式: %s\n", dataSplitType)
-	fmt.Printf("最小参与方阈值: %d (%.1f%%)\n", coordinator.GetMinParticipants(), float64(coordinator.GetMinParticipants())/float64(n)*100)
-	fmt.Printf("本机IP地址: %s\n", coordinator.GetLocalIP())
-
-	// 启动协调器
-	if err := coordinator.Start(); err != nil {
-		panic(err)
-	}
+	// 其他路由注册...
+	r.SetTrustedProxies([]string{"127.0.0.1"})
+	r.Run(":8080")
 }
