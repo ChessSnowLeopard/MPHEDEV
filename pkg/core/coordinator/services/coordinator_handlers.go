@@ -46,6 +46,39 @@ type CoordinatorStartResponse struct {
 	StartTime            string `json:"start_time"`
 }
 
+// ParticipantStatus and CoordinatorStatusResponse for status API
+// 响应体
+//
+//	type ParticipantStatus struct {
+//	    ID            int    `json:"id"`
+//	    URL           string `json:"url"`
+//	    Status        string `json:"status"` // "online" or "offline"
+//	    LastHeartbeat string `json:"last_heartbeat"`
+//	}
+//
+//	type CoordinatorStatusResponse struct {
+//	    ExpectedParticipants   int                 `json:"expected_participants"`
+//	    RegisteredParticipants int                 `json:"registered_participants"`
+//	    OnlineParticipants     int                 `json:"online_participants"`
+//	    DataSplitType          string              `json:"data_split_type"`
+//	    Status                 string              `json:"status"`
+//	    Participants           []ParticipantStatus `json:"participants"`
+//	}
+type ParticipantStatus struct {
+	ID            int    `json:"id"`
+	URL           string `json:"url"`
+	Status        string `json:"status"` // "online" or "offline"
+	LastHeartbeat string `json:"last_heartbeat"`
+}
+type CoordinatorStatusResponse struct {
+	ExpectedParticipants   int                 `json:"expected_participants"`
+	RegisteredParticipants int                 `json:"registered_participants"`
+	OnlineParticipants     int                 `json:"online_participants"`
+	DataSplitType          string              `json:"data_split_type"`
+	Status                 string              `json:"status"`
+	Participants           []ParticipantStatus `json:"participants"`
+}
+
 // ==================== HTTP处理器方法 ====================
 
 // registerHandler 注册参与方处理器
@@ -511,4 +544,58 @@ func PostSecretKeyHandler(ctx *gin.Context) {
 
 func GetSetupStatusHandler(ctx *gin.Context) {
 	globalCoordinator.getSetupStatusHandler(ctx)
+}
+
+func (c *Coordinator) getCoordinatorStatusHandler(ctx *gin.Context) {
+	pm := c.ParticipantManager
+	participants := pm.GetParticipants() // []*ParticipantInfo
+	urls := make(map[int]string)
+	for _, peer := range pm.GetAllParticipantURLs() {
+		urls[peer.ID] = peer.URL
+	}
+	onlineIDs := make(map[int]struct{})
+	for _, peer := range pm.GetOnlineParticipants() {
+		onlineIDs[peer.ID] = struct{}{}
+	}
+
+	result := make([]ParticipantStatus, 0, len(participants))
+	onlineCount := 0
+	for _, p := range participants {
+		url := urls[p.ID]
+		lastHeartbeat, hasHeartbeat := pm.GetLastHeartbeat(p.ID)
+		status := "offline"
+		lastHeartbeatStr := ""
+		if _, ok := onlineIDs[p.ID]; ok {
+			status = "online"
+			onlineCount++
+		}
+		if hasHeartbeat {
+			lastHeartbeatStr = lastHeartbeat.Format(time.RFC3339)
+		}
+		result = append(result, ParticipantStatus{
+			ID:            p.ID,
+			URL:           url,
+			Status:        status,
+			LastHeartbeat: lastHeartbeatStr,
+		})
+	}
+
+	resp := CoordinatorStatusResponse{
+		ExpectedParticipants:   c.ParticipantManager.GetMinParticipants(),
+		RegisteredParticipants: len(participants),
+		OnlineParticipants:     onlineCount,
+		DataSplitType:          c.ParameterManager.GetDataSplitType(),
+		Status:                 "running",
+		Participants:           result,
+	}
+	ctx.JSON(200, resp)
+}
+
+// 全局 handler，便于 main.go 注册
+func GetCoordinatorStatusHandler(ctx *gin.Context) {
+	if globalCoordinator == nil {
+		ctx.JSON(400, gin.H{"error": "Coordinator not initialized"})
+		return
+	}
+	globalCoordinator.getCoordinatorStatusHandler(ctx)
 }

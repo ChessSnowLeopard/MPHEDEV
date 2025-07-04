@@ -12,6 +12,8 @@ func main() {
 
 	// 注册初始化协调器的接口
 	router.POST("/api/coordinator/init", services.InitHandler)
+	// 注册状态查询接口
+	router.GET("/api/coordinator/status", services.RequireCoordinator(), services.GetCoordinatorStatusHandler)
 
 	port := "8060"
 	fmt.Printf("Coordinator HTTP server running on port %s\n", port)

@@ -241,3 +241,11 @@ func (m *Manager) GetMinParticipants() int {
 func (m *Manager) GetExpectedN() int {
 	return m.minParticipants
 }
+
+// GetLastHeartbeat 获取指定参与方的最后心跳时间
+func (m *Manager) GetLastHeartbeat(id int) (time.Time, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	t, ok := m.heartbeats[id]
+	return t, ok
+}
