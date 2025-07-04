@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"github.com/tuneinsight/lattigo/v6/multiparty"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
@@ -22,6 +24,180 @@ func getUserInput(prompt string) string {
 	reader := bufio.NewReader(os.Stdin)
 	input, _ := reader.ReadString('\n')
 	return strings.TrimSpace(input)
+}
+
+// ParticipantIPPush WebSocket 消息结构体
+// type ParticipantIPPush struct {
+//     Type string `json:"type"`
+//     IP   string `json:"ip"`
+//     Port int    `json:"port"`
+// }
+
+// KeyGenProgressPush 结构体
+// 用于 /api/participant/step 接口
+type KeyGenProgressPush struct {
+	Type      string `json:"type"`
+	Step      string `json:"step"`
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
+var (
+	keyGenProgress     = KeyGenProgressPush{Type: "keygen_progress"}
+	keyGenProgressLock sync.RWMutex
+)
+
+func setKeyGenProgress(step, status, message string) {
+	keyGenProgressLock.Lock()
+	defer keyGenProgressLock.Unlock()
+	keyGenProgress.Step = step
+	keyGenProgress.Status = status
+	keyGenProgress.Message = message
+	keyGenProgress.Timestamp = time.Now().Format(time.RFC3339)
+}
+
+func getKeyGenProgress() KeyGenProgressPush {
+	keyGenProgressLock.RLock()
+	defer keyGenProgressLock.RUnlock()
+	return keyGenProgress
+}
+
+// ParticipantSelfStatusResponse 结构体
+//
+//	type ParticipantSelfStatusResponse struct {
+//	    ID          int               `json:"id"`
+//	    IP          string            `json:"ip"`
+//	    Port        int               `json:"port"`
+//	    Status      string            `json:"status"`
+//	    DataSplit   string            `json:"data_split"`
+//	    Participants map[int]string   `json:"participants"`
+//	}
+type ParticipantSelfStatusResponse struct {
+	ID           int            `json:"id"`
+	IP           string         `json:"ip"`
+	Port         int            `json:"port"`
+	Status       string         `json:"status"`
+	DataSplit    string         `json:"data_split"`
+	Participants map[int]string `json:"participants"`
+}
+
+// OnlineStatusParticipant 和 ParticipantOnlineStatusResponse 结构体
+//
+//	type OnlineStatusParticipant struct {
+//	    ID            int    `json:"id"`
+//	    URL           string `json:"url"`
+//	    LastHeartbeat string `json:"last_heartbeat"`
+//	    Status        string `json:"status"`
+//	}
+//
+//	type ParticipantOnlineStatusResponse struct {
+//	    OnlineCount        int                       `json:"online_count"`
+//	    TotalCount         int                       `json:"total_count"`
+//	    OnlinePercentage   float64                   `json:"online_percentage"`
+//	    MinParticipants    int                       `json:"min_participants"`
+//	    CanProceed         bool                      `json:"can_proceed"`
+//	    OnlineTimeout      float64                   `json:"online_timeout"`
+//	    HeartbeatInterval  float64                   `json:"heartbeat_interval"`
+//	    Participants       []OnlineStatusParticipant `json:"participants"`
+//	}
+type OnlineStatusParticipant struct {
+	ID            int    `json:"id"`
+	URL           string `json:"url"`
+	LastHeartbeat string `json:"last_heartbeat"`
+	Status        string `json:"status"`
+}
+type ParticipantOnlineStatusResponse struct {
+	OnlineCount       int                       `json:"online_count"`
+	TotalCount        int                       `json:"total_count"`
+	OnlinePercentage  float64                   `json:"online_percentage"`
+	MinParticipants   int                       `json:"min_participants"`
+	CanProceed        bool                      `json:"can_proceed"`
+	OnlineTimeout     float64                   `json:"online_timeout"`
+	HeartbeatInterval float64                   `json:"heartbeat_interval"`
+	Participants      []OnlineStatusParticipant `json:"participants"`
+}
+
+func startIPPushServer(ip string, port int, participant *services.Participant) {
+	r := gin.Default()
+	r.GET("/api/participant/ws", func(c *gin.Context) {
+		msg := struct {
+			Type string `json:"type"`
+			IP   string `json:"ip"`
+			Port int    `json:"port"`
+		}{
+			Type: "ip",
+			IP:   ip,
+			Port: port,
+		}
+		c.JSON(200, msg)
+	})
+	r.POST("/api/participant/ws", func(c *gin.Context) {
+		msg := struct {
+			Type string `json:"type"`
+			IP   string `json:"ip"`
+			Port int    `json:"port"`
+		}{
+			Type: "ip",
+			IP:   ip,
+			Port: port,
+		}
+		c.JSON(200, msg)
+	})
+	// 新增密钥进度查询接口
+	r.GET("/api/participant/step", func(c *gin.Context) {
+		c.JSON(200, getKeyGenProgress())
+	})
+	// 新增自身状态查询接口
+	r.GET("/api/participant/status", func(c *gin.Context) {
+		resp := ParticipantSelfStatusResponse{
+			ID:           participant.ID,
+			IP:           ip,
+			Port:         port,
+			Status:       "online",
+			DataSplit:    participant.DataSplit,
+			Participants: participant.GetOnlineParticipants(),
+		}
+		c.JSON(200, resp)
+	})
+	// 新增在线状态查询接口
+	r.GET("/api/participant/online-status", func(c *gin.Context) {
+		if participant.HeartbeatManager == nil {
+			c.JSON(500, gin.H{"error": "HeartbeatManager not initialized"})
+			return
+		}
+		status, err := participant.HeartbeatManager.GetOnlineStatus()
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		resp := ParticipantOnlineStatusResponse{
+			OnlineCount:       intValue(status["online_count"]),
+			TotalCount:        intValue(status["total_count"]),
+			OnlinePercentage:  floatValue(status["online_percentage"]),
+			MinParticipants:   intValue(status["min_participants"]),
+			CanProceed:        boolValue(status["can_proceed"]),
+			OnlineTimeout:     floatValue(status["online_timeout"]),
+			HeartbeatInterval: floatValue(status["heartbeat_interval"]),
+		}
+		peers := participant.PeerManager.GetPeers()
+		var participants []OnlineStatusParticipant
+		for id, url := range peers {
+			participants = append(participants, OnlineStatusParticipant{
+				ID:     id,
+				URL:    url,
+				Status: "online",
+			})
+		}
+		resp.Participants = participants
+		c.JSON(200, resp)
+	})
+	addr := ":8061"
+	go func() {
+		if err := r.Run(addr); err != nil {
+			panic(err)
+		}
+	}()
 }
 
 func main() {
@@ -38,6 +214,9 @@ func main() {
 	}
 	fmt.Printf("本机IP: %s\n", localIP)
 
+	// 启动 WebSocket 服务（8061端口）
+	startIPPushServer(localIP, 8061, participant)
+
 	// 获取协调器IP
 	coordinatorIP := getUserInput("请输入协调器IP地址: ")
 	if coordinatorIP == "" {
@@ -49,9 +228,12 @@ func main() {
 	coordinatorURL := fmt.Sprintf("http://%s:8080", coordinatorIP)
 
 	// 1. 注册并获取参数
+	setKeyGenProgress("register", "started", "注册参与方")
 	if err := participant.Register(coordinatorURL); err != nil {
+		setKeyGenProgress("register", "failed", err.Error())
 		panic(err)
 	}
+	setKeyGenProgress("register", "success", "注册成功")
 
 	// 设置参与方ID到客户端
 	participant.CoordinatorClient.SetParticipantID(participant.ID)
@@ -148,18 +330,24 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	setKeyGenProgress("upload_secret_key", "started", "上传私钥")
 	if err := participant.CoordinatorClient.UploadSecretKey(skB64); err != nil {
+		setKeyGenProgress("upload_secret_key", "failed", err.Error())
 		panic(err)
 	}
+	setKeyGenProgress("upload_secret_key", "success", "上传私钥成功")
 
 	// 5. 编码并上传公钥份额
 	shareB64, err := keyGen.EncodePublicKeyShare(share)
 	if err != nil {
 		panic(err)
 	}
+	setKeyGenProgress("upload_public_key_share", "started", "上传公钥份额")
 	if err := participant.CoordinatorClient.UploadPublicKeyShare(shareB64); err != nil {
+		setKeyGenProgress("upload_public_key_share", "failed", err.Error())
 		panic(err)
 	}
+	setKeyGenProgress("upload_public_key_share", "success", "上传公钥份额成功")
 
 	// 6. 生成并上传伽罗瓦密钥份额
 	galoisShares, err := keyGen.GenerateGaloisKeyShares()
@@ -297,4 +485,39 @@ func main() {
 
 	// 16. 运行主循环
 	participant.RunMainLoop()
+}
+
+// 辅助类型转换函数
+func intValue(v interface{}) int {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case int:
+		return val
+	case float64:
+		return int(val)
+	}
+	return 0
+}
+func floatValue(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	if i, ok := v.(int); ok {
+		return float64(i)
+	}
+	return 0
+}
+func boolValue(v interface{}) bool {
+	if v == nil {
+		return false
+	}
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	return false
 }

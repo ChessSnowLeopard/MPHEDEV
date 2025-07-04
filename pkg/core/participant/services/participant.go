@@ -304,7 +304,6 @@ func (p *Participant) RequestCollaborativeRefresh() error {
 func (p *Participant) RunMainLoop() {
 	// 进入菜单模式，启用静默模式
 	p.SetSilentMode(true)
-
 	for {
 		fmt.Println("\n请选择操作：")
 		fmt.Println("1. 发起协同解密请求")
@@ -327,22 +326,22 @@ func (p *Participant) RunMainLoop() {
 				fmt.Println("[错误] 在线状态检查失败:", err)
 				continue
 			}
-
 			// 发起协同解密请求
 			if err := p.RequestCollaborativeDecrypt(); err != nil {
 				fmt.Printf("[错误] 协同解密失败: %v\n", err)
 			}
+			continue
 		case 2:
 			// 先检查在线状态
 			if err := p.CheckOnlineStatusBeforeOperation(); err != nil {
 				fmt.Println("[错误] 在线状态检查失败:", err)
 				continue
 			}
-
 			// 发起协同刷新请求
 			if err := p.RequestCollaborativeRefresh(); err != nil {
 				fmt.Printf("[错误] 协同刷新失败: %v\n", err)
 			}
+			continue
 		case 3:
 			// 临时禁用静默模式以显示状态
 			p.SetSilentMode(false)
@@ -351,6 +350,7 @@ func (p *Participant) RunMainLoop() {
 			}
 			// 重新启用静默模式
 			p.SetSilentMode(true)
+			continue
 		case 4:
 			fmt.Println("退出程序。")
 			p.StopHeartbeat()

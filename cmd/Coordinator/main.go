@@ -14,6 +14,8 @@ func main() {
 	router.POST("/api/coordinator/init", services.InitHandler)
 	// 注册状态查询接口
 	router.GET("/api/coordinator/status", services.RequireCoordinator(), services.GetCoordinatorStatusHandler)
+	// 注册密钥进度查询接口
+	router.GET("/api/coordinator/key-progress", services.RequireCoordinator(), services.GetKeyProgressHandler)
 
 	port := "8060"
 	fmt.Printf("Coordinator HTTP server running on port %s\n", port)

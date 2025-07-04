@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/gorilla/websocket"
 )
 
 // Handlers HTTP处理器集合
@@ -35,6 +36,11 @@ func (h *Handlers) GetHandlers() map[string]http.HandlerFunc {
 		"/partial_decrypt": h.handlePartialDecrypt,
 		"/partial_refresh": h.handlePartialRefresh,
 		"/keys/receive":    h.handleReceiveKeys,
+		"/api/participant/collaborative-decrypt": h.handleCollaborativeDecrypt,
+		"/api/participant/collaborative-refresh": h.handleCollaborativeRefresh,
+		"/api/participant/ws": func(w http.ResponseWriter, r *http.Request) {
+			h.handleParticipantWS(w, r)
+		},
 	}
 }
 
@@ -183,4 +189,57 @@ func (h *Handlers) handlePartialRefresh(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(types.RefreshShareResponse{
 		Share: shareB64,
 	})
+}
+
+func (h *Handlers) handleCollaborativeDecrypt(w http.ResponseWriter, r *http.Request) {
+	if !h.keyManager.IsReady() {
+		http.Error(w, "密钥未准备就绪", http.StatusServiceUnavailable)
+		return
+	}
+	// 这里假设参与方ID为1，实际应从会话或配置获取
+	// 这里只做本地触发，实际可根据需要扩展
+	if err := h.decryptionService.RequestCollaborativeDecrypt(nil, 1); err != nil {
+		http.Error(w, "协同解密失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "协同解密请求已发起"})
+}
+
+func (h *Handlers) handleCollaborativeRefresh(w http.ResponseWriter, r *http.Request) {
+	if !h.keyManager.IsReady() {
+		http.Error(w, "密钥未准备就绪", http.StatusServiceUnavailable)
+		return
+	}
+	if err := h.refreshService.RequestCollaborativeRefresh(nil, 1); err != nil {
+		http.Error(w, "协同刷新失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "协同刷新请求已发起"})
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func (h *Handlers) handleParticipantWS(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	ip := "127.0.0.1" // 可根据实际情况获取本机IP
+	port := 8061      // 参与方端口
+	msg := struct {
+		Type string `json:"type"`
+		IP   string `json:"ip"`
+		Port int    `json:"port"`
+	}{
+		Type: "ip",
+		IP:   ip,
+		Port: port,
+	}
+	conn.WriteJSON(msg)
 }

@@ -79,6 +79,36 @@ type CoordinatorStatusResponse struct {
 	Participants           []ParticipantStatus `json:"participants"`
 }
 
+// KeyProgress struct for GET /api/coordinator/key-progress
+type KeyProgress struct {
+	PublicKey struct {
+		Status         string `json:"status"`
+		ReceivedShares int    `json:"received_shares"`
+		TotalExpected  int    `json:"total_expected"`
+		Ready          bool   `json:"ready"`
+	} `json:"public_key"`
+	SecretKey struct {
+		Status         string `json:"status"`
+		ReceivedShares int    `json:"received_shares"`
+		TotalExpected  int    `json:"total_expected"`
+		Ready          bool   `json:"ready"`
+	} `json:"secret_key"`
+	GaloisKeys struct {
+		Status        string `json:"status"`
+		CompletedKeys int    `json:"completed_keys"`
+		TotalKeys     int    `json:"total_keys"`
+		Ready         bool   `json:"ready"`
+	} `json:"galois_keys"`
+	RelinearizationKey struct {
+		Status      string `json:"status"`
+		Round1Ready bool   `json:"round1_ready"`
+		Round2Ready bool   `json:"round2_ready"`
+		Ready       bool   `json:"ready"`
+	} `json:"relinearization_key"`
+	OverallProgress int  `json:"overall_progress"`
+	AllKeysReady    bool `json:"all_keys_ready"`
+}
+
 // ==================== HTTP处理器方法 ====================
 
 // registerHandler 注册参与方处理器
@@ -598,4 +628,74 @@ func GetCoordinatorStatusHandler(ctx *gin.Context) {
 		return
 	}
 	globalCoordinator.getCoordinatorStatusHandler(ctx)
+}
+
+// GetKeyProgressHandler 获取密钥进度处理器
+func GetKeyProgressHandler(ctx *gin.Context) {
+	if globalCoordinator == nil {
+		ctx.JSON(400, gin.H{"error": "Coordinator not initialized"})
+		return
+	}
+	c := globalCoordinator
+	status := c.GetStatus()
+
+	progress := KeyProgress{}
+	// 公钥
+	progress.PublicKey.ReceivedShares = status["received_shares"].(int)
+	progress.PublicKey.TotalExpected = status["total"].(int)
+	progress.PublicKey.Ready = status["global_pk_ready"].(bool)
+	progress.PublicKey.Status = statusText(progress.PublicKey.Ready, progress.PublicKey.ReceivedShares, progress.PublicKey.TotalExpected)
+	// 私钥
+	progress.SecretKey.ReceivedShares = status["received_secrets"].(int)
+	progress.SecretKey.TotalExpected = status["total"].(int)
+	progress.SecretKey.Ready = status["sk_agg_ready"].(bool)
+	progress.SecretKey.Status = statusText(progress.SecretKey.Ready, progress.SecretKey.ReceivedShares, progress.SecretKey.TotalExpected)
+	// 伽罗瓦密钥
+	progress.GaloisKeys.CompletedKeys = status["completed_galois_keys"].(int)
+	progress.GaloisKeys.TotalKeys = status["total_galois_keys"].(int)
+	progress.GaloisKeys.Ready = status["galois_keys_ready"].(int) == status["total_galois_keys"].(int)
+	progress.GaloisKeys.Status = statusText(progress.GaloisKeys.Ready, progress.GaloisKeys.CompletedKeys, progress.GaloisKeys.TotalKeys)
+	// 重线性化密钥
+	progress.RelinearizationKey.Round1Ready = status["rlk_round1_ready"].(bool)
+	progress.RelinearizationKey.Round2Ready = status["rlk_round2_ready"].(bool)
+	progress.RelinearizationKey.Ready = status["rlk_ready"].(bool)
+	progress.RelinearizationKey.Status = rlkStatusText(progress.RelinearizationKey.Round1Ready, progress.RelinearizationKey.Round2Ready, progress.RelinearizationKey.Ready)
+	// 总进度和全部就绪
+	readyCount := 0
+	if progress.PublicKey.Ready {
+		readyCount++
+	}
+	if progress.SecretKey.Ready {
+		readyCount++
+	}
+	if progress.GaloisKeys.Ready {
+		readyCount++
+	}
+	if progress.RelinearizationKey.Ready {
+		readyCount++
+	}
+	progress.OverallProgress = readyCount * 25
+	progress.AllKeysReady = readyCount == 4
+
+	ctx.JSON(200, progress)
+}
+
+// 状态文本辅助函数
+func statusText(ready bool, got, total int) string {
+	if ready {
+		return "ready"
+	}
+	return fmt.Sprintf("%d/%d", got, total)
+}
+func rlkStatusText(round1, round2, ready bool) string {
+	if ready {
+		return "ready"
+	}
+	if round1 && !round2 {
+		return "round1 done"
+	}
+	if round2 && !ready {
+		return "round2 done"
+	}
+	return "in progress"
 }
