@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // KeysResponse 聚合密钥响应结构体
@@ -16,6 +18,32 @@ type KeysResponse struct {
 	PubKey     string            `json:"pub_key"`
 	RelineKey  string            `json:"reline_key"`
 	GaloisKeys map[string]string `json:"galois_keys"`
+}
+
+// CoordinatorStartResponse is the response structure for /api/coordinator/init
+// 响应体
+//
+//	type CoordinatorStartResponse struct {
+//	    Success             bool   `json:"success"`
+//	    Message             string `json:"message"`
+//	    CoordinatorID       string `json:"coordinator_id"`
+//	    ExpectedParticipants int   `json:"expected_participants"`
+//	    DataSplitType       string `json:"data_split_type"`
+//	    Status              string `json:"status"`
+//	    CoordinatorIP       string `json:"coordinator_ip"`
+//	    CoordinatorPort     int    `json:"coordinator_port"`
+//	    StartTime           string `json:"start_time"`
+//	}
+type CoordinatorStartResponse struct {
+	Success              bool   `json:"success"`
+	Message              string `json:"message"`
+	CoordinatorID        string `json:"coordinator_id"`
+	ExpectedParticipants int    `json:"expected_participants"`
+	DataSplitType        string `json:"data_split_type"`
+	Status               string `json:"status"`
+	CoordinatorIP        string `json:"coordinator_ip"`
+	CoordinatorPort      int    `json:"coordinator_port"`
+	StartTime            string `json:"start_time"`
 }
 
 // ==================== HTTP处理器方法 ====================
@@ -415,7 +443,7 @@ func (c *Coordinator) postJSON(url string, data interface{}) error {
 
 type InitRequest struct {
 	NumParticipants int    `json:"num_participants"`
-	DataSplitType   string `json:"data_split_type"` // 可选，若有数据划分类型
+	DataSplitType   string `json:"data_split_type"` // "horizontal" or "vertical"
 }
 
 var (
@@ -429,14 +457,12 @@ func InitHandler(ctx *gin.Context) {
 		ctx.JSON(400, gin.H{"error": "invalid num_participants"})
 		return
 	}
-	// 优先从 Gin Context 读取 data_split_type（main.go 注入），否则用请求体里的
 	dataSplitType := req.DataSplitType
 	if v, ok := ctx.Get("data_split_type"); ok {
 		if s, ok2 := v.(string); ok2 && s != "" {
 			dataSplitType = s
 		}
 	}
-	// 创建协调器实例
 	coordinator, err := NewCoordinator(req.NumParticipants, dataSplitType)
 	if err != nil {
 		ctx.JSON(500, gin.H{"error": err.Error()})
@@ -444,7 +470,23 @@ func InitHandler(ctx *gin.Context) {
 	}
 	globalCoordinator = coordinator
 	go globalCoordinator.Start() // 启动后台服务
-	ctx.JSON(200, gin.H{"status": "ok"})
+
+	coordinatorID := uuid.New().String()
+	startTime := time.Now().Format(time.RFC3339)
+	ip := globalCoordinator.GetLocalIP()
+	port := 8080 // 默认端口
+	resp := CoordinatorStartResponse{
+		Success:              true,
+		Message:              "Coordinator initialized successfully",
+		CoordinatorID:        coordinatorID,
+		ExpectedParticipants: req.NumParticipants,
+		DataSplitType:        dataSplitType,
+		Status:               "running",
+		CoordinatorIP:        ip,
+		CoordinatorPort:      port,
+		StartTime:            startTime,
+	}
+	ctx.JSON(200, resp)
 }
 
 // RequireCoordinator Gin 中间件，校验 globalCoordinator 是否已初始化

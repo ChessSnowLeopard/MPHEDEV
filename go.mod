@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/gin-gonic/gin v1.10.1
+	github.com/google/uuid v1.6.0
 	github.com/tuneinsight/lattigo/v6 v6.1.1
 	gonum.org/v1/gonum v0.16.0
 )
