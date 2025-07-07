@@ -300,16 +300,21 @@ func (cc *CoordinatorClient) WaitForCompletion() error {
 
 // GetAggregatedKeys 获取聚合后的密钥
 func (cc *CoordinatorClient) GetAggregatedKeys() (*types.KeysResponse, error) {
+	fmt.Printf("开始请求聚合密钥...\n")
+
 	resp, err := cc.client.Client.Get(cc.baseURL + "/keys/aggregated")
 	if err != nil {
+		fmt.Printf("请求聚合密钥失败: %v\n", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	var keys types.KeysResponse
 	if err := json.NewDecoder(resp.Body).Decode(&keys); err != nil {
+		fmt.Printf("解析聚合密钥响应失败: %v\n", err)
 		return nil, err
 	}
 
+	fmt.Printf("成功获取聚合密钥，包含 %d 个伽罗瓦密钥\n", len(keys.GaloisKeys))
 	return &keys, nil
 }

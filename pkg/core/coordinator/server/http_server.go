@@ -43,6 +43,13 @@ func (hs *HTTPServer) Start() error {
 	fmt.Printf("在线状态页面: http://%s:%s/status/online\n", hs.LocalIP, hs.Port)
 	fmt.Printf("等待参与方连接...\n\n")
 
+	// 设置HTTP服务器超时配置
+	hs.Router.Use(func(c *gin.Context) {
+		// 设置请求超时时间为5分钟
+		c.Request.Header.Set("Connection", "keep-alive")
+		c.Next()
+	})
+
 	return hs.Router.Run(":" + hs.Port)
 }
 

@@ -113,14 +113,24 @@ type KeyProgress struct {
 
 // registerHandler 注册参与方处理器
 func (c *Coordinator) registerHandler(ctx *gin.Context) {
+	// 添加调试信息
+	clientIP := ctx.ClientIP()
+	fmt.Printf("[DEBUG] 收到注册请求，来源IP: %s\n", clientIP)
+	fmt.Printf("[DEBUG] 请求头: %v\n", ctx.Request.Header)
+
 	var req struct {
 		ShardID string `json:"shard_id"`
 	}
 	if err := ctx.ShouldBindJSON(&req); err != nil || req.ShardID == "" {
+		fmt.Printf("[DEBUG] 注册请求解析失败: %v\n", err)
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid request, shard_id required"})
 		return
 	}
+
+	fmt.Printf("[DEBUG] 注册请求成功，shard_id: %s\n", req.ShardID)
 	id := c.RegisterParticipant(req.ShardID)
+	fmt.Printf("[DEBUG] 分配参与方ID: %d\n", id)
+
 	ctx.JSON(http.StatusOK, gin.H{"participant_id": id})
 }
 
@@ -396,9 +406,12 @@ func (c *Coordinator) getRelinearizationKeyStatusHandler(ctx *gin.Context) {
 
 // getAggregatedKeysHandler 获取聚合密钥处理器
 func (c *Coordinator) getAggregatedKeysHandler(ctx *gin.Context) {
+	fmt.Printf("收到聚合密钥请求，来自: %s\n", ctx.ClientIP())
+
 	// 检查所有密钥是否都已准备就绪
 	status := c.GetStatus()
 	if !status["global_pk_ready"].(bool) || !status["rlk_ready"].(bool) {
+		fmt.Printf("密钥未完全聚合完成，拒绝请求\n")
 		ctx.JSON(http.StatusServiceUnavailable, gin.H{"error": "密钥尚未完全聚合完成"})
 		return
 	}
@@ -443,6 +456,8 @@ func (c *Coordinator) getAggregatedKeysHandler(ctx *gin.Context) {
 		RelineKey:  relineKeyB64,
 		GaloisKeys: galoisKeysMap,
 	}
+
+	fmt.Printf("密钥响应构造完成，发送给 %s\n", ctx.ClientIP())
 	ctx.JSON(http.StatusOK, resp)
 }
 

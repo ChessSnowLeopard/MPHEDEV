@@ -229,9 +229,25 @@ func main() {
 
 	// 1. 注册并获取参数
 	setKeyGenProgress("register", "started", "注册参与方")
-	if err := participant.Register(coordinatorURL); err != nil {
-		setKeyGenProgress("register", "failed", err.Error())
-		panic(err)
+
+	// 重试机制：等待协调器后端服务器启动
+	maxRetries := 10
+	fmt.Printf("尝试连接到协调器: %s\n", coordinatorURL)
+	fmt.Printf("参与方IP: %s\n", localIP)
+
+	for i := 0; i < maxRetries; i++ {
+		if err := participant.Register(coordinatorURL); err != nil {
+			fmt.Printf("注册失败 (尝试 %d/%d): %v\n", i+1, maxRetries, err)
+			fmt.Printf("网络诊断: 参与方(%s) -> 协调器(%s)\n", localIP, coordinatorIP)
+			if i < maxRetries-1 {
+				fmt.Println("等待3秒后重试...")
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			setKeyGenProgress("register", "failed", err.Error())
+			panic(err)
+		}
+		break
 	}
 	setKeyGenProgress("register", "success", "注册成功")
 
@@ -407,26 +423,33 @@ func main() {
 	}
 
 	// 10. 等待所有密钥生成完成
+	fmt.Println("开始等待所有密钥生成完成...")
 	for {
 		status, err := participant.CoordinatorClient.PollStatus()
 		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue
 		}
+
 		if status.GlobalPKReady && status.SkAggReady && status.RlkReady &&
 			status.CompletedGaloisKeys == status.TotalGaloisKeys {
+			fmt.Println("所有密钥生成完成！")
 			break
 		}
 		time.Sleep(2 * time.Second)
 	}
 
 	// 11. 获取聚合后的密钥
+	fmt.Println("开始获取聚合后的密钥...")
 	keys, err := participant.CoordinatorClient.GetAggregatedKeys()
 	if err != nil {
+		fmt.Printf("获取聚合密钥失败: %v\n", err)
 		panic(err)
 	}
+	fmt.Println("成功获取聚合密钥")
 
 	// 解码并设置公钥
+	fmt.Println("开始解码并设置公钥...")
 	pubKeyBytes, err := utils.DecodeFromBase64(keys.PubKey)
 	if err != nil {
 		panic(err)
@@ -436,8 +459,10 @@ func main() {
 		panic(err)
 	}
 	participant.KeyManager.SetPublicKey(&pubKey)
+	fmt.Println("公钥设置完成")
 
 	// 解码并设置重线性化密钥
+	fmt.Println("开始解码并设置重线性化密钥...")
 	rlkBytes, err := utils.DecodeFromBase64(keys.RelineKey)
 	if err != nil {
 		panic(err)
@@ -447,8 +472,10 @@ func main() {
 		panic(err)
 	}
 	participant.KeyManager.SetRelinearizationKey(&rlk)
+	fmt.Println("重线性化密钥设置完成")
 
 	// 解码并设置伽罗瓦密钥
+	fmt.Printf("开始解码并设置伽罗瓦密钥 (共 %d 个)...\n", len(keys.GaloisKeys))
 	galoisKeys := make([]*rlwe.GaloisKey, 0)
 	for _, keyStr := range keys.GaloisKeys {
 		keyBytes, err := utils.DecodeFromBase64(keyStr)
@@ -462,13 +489,18 @@ func main() {
 		galoisKeys = append(galoisKeys, &galoisKey)
 	}
 	participant.KeyManager.SetGaloisKeys(galoisKeys)
+	fmt.Println("所有伽罗瓦密钥设置完成")
 
 	// 12. 获取在线成员列表
-	if err := participant.UpdateOnlineParticipants(); err != nil {
+	fmt.Printf("参与方 %d 收集密钥并解码设置，启动成功，开始检查在线状态...\n", participant.ID)
+	if err := participant.CheckOnlineStatusBeforeOperation(); err != nil {
+		fmt.Printf("在线状态检查失败: %v\n", err)
 		panic(err)
 	}
 
-	fmt.Printf("参与方 %d 启动成功\n", participant.ID)
+	if err := participant.UpdateOnlineParticipants(); err != nil {
+		panic(err)
+	}
 
 	// 13. 载入数据集
 	if err := participant.LoadDataset(); err != nil {

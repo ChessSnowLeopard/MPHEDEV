@@ -2,7 +2,7 @@
 """
 MNIST数据集分割脚本
 支持按样本(水平)或特征(竖直)拆分MNIST数据集，便于分布式训练使用
-数据路径: ../data/
+数据路径: ./raw/
 输出路径: ./horizontal/ 和 ./vertical/
 """
 
@@ -24,7 +24,7 @@ class MNISTSplitter:
         self.test_images = None
         self.test_labels = None
         # 固定数据路径
-        self.data_dir = Path("../data")
+        self.data_dir = Path("./raw")
         
     def load_mnist_images(self, filepath: Path) -> np.ndarray:
         """加载MNIST图像数据"""
@@ -609,7 +609,7 @@ def main():
         
     except FileNotFoundError as e:
         print(f"错误: {e}")
-        print("请确保MNIST数据集文件存在于 ../data/ 目录中:")
+        print("请确保MNIST数据集文件存在于 ./raw/ 目录中:")
         print("  - train-images-idx3-ubyte.gz")
         print("  - train-labels-idx1-ubyte.gz") 
         print("  - t10k-images-idx3-ubyte.gz")

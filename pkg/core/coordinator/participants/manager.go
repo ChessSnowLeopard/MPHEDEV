@@ -40,8 +40,8 @@ func NewManager(expectedN int) *Manager {
 		nextID: 1,
 		//记录每个参与方最近一次心跳时间
 		heartbeats: make(map[int]time.Time),
-		//心跳超时时间10s
-		onlineTimeout:   10 * time.Second,
+		//心跳超时时间30s（增加时间给密钥解析）
+		onlineTimeout:   30 * time.Second,
 		minParticipants: minParticipants,
 		//心跳间隔5s
 		heartbeatInterval: 5 * time.Second,
@@ -58,14 +58,27 @@ func (m *Manager) RegisterParticipant(shardID string) int {
 	if id, exists := m.shardToID[shardID]; exists {
 		return id
 	}
-	var id int
-	if len(m.freeIDs) > 0 {
-		id = m.freeIDs[0]
-		m.freeIDs = m.freeIDs[1:]
-	} else {
-		id = m.nextID
-		m.nextID++
+
+	// 解析分片ID，提取数字部分（去掉前导零）
+	var shardNum int
+	fmt.Sscanf(shardID, "%d", &shardNum)
+
+	// 直接使用分片数字作为参与方ID（从1开始）
+	id := shardNum + 1
+
+	// 如果ID已经被使用，则使用下一个可用ID
+	for {
+		if _, exists := m.idToShard[id]; !exists {
+			break
+		}
+		id++
 	}
+
+	// 更新nextID，确保后续分配不会冲突
+	if id >= m.nextID {
+		m.nextID = id + 1
+	}
+
 	m.shardToID[shardID] = id
 	m.idToShard[id] = shardID
 	m.participants[id] = &utils.ParticipantInfo{ID: id, Status: "registered"}
