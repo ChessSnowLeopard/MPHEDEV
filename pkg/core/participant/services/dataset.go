@@ -185,22 +185,28 @@ func (p *Participant) EncryptAndDistributeDataset() error {
 		}
 	}
 
-	// 根据参与方角色处理数据
+	fmt.Printf("参与方角色：输入层=%d, 输出层=%d, 当前参与方=%d\n", inputLayerID, outputLayerID, p.ID)
+
+	// 所有参与方都加密数据集，只是发送目标不同
+	fmt.Printf("参与方 %d：开始加密并分发数据集\n", p.ID)
+
+	// 根据参与方角色确定发送目标
 	if p.ID == inputLayerID && p.ID == outputLayerID {
 		// 只有一个参与方时：既是输入层又是输出层，需要发送数据给自己
-
+		fmt.Printf("参与方 %d：既是输入层又是输出层，发送数据给自己\n", p.ID)
 		return p.encryptAndSendData(encoder, encryptor, inputLayerID, outputLayerID)
 	} else if p.ID == inputLayerID {
-		// 输入层参与方：只接收特征数据，不发送
-
-		return nil
+		// 输入层参与方：加密标签数据发送给输出层
+		fmt.Printf("参与方 %d：作为输入层，加密标签数据发送给输出层 %d\n", p.ID, outputLayerID)
+		return p.encryptAndSendLabelsToOutput(encoder, encryptor, outputLayerID)
 	} else if p.ID == outputLayerID {
-		// 输出层参与方：只接收标签数据，不发送
-
-		return nil
+		// 输出层参与方：加密特征数据发送给输入层
+		fmt.Printf("参与方 %d：作为输出层，加密特征数据发送给输入层 %d\n", p.ID, inputLayerID)
+		return p.encryptAndSendFeaturesToInput(encoder, encryptor, inputLayerID)
 	} else {
-		// 中间层参与方：加密并发送特征和标签数据
-		return p.encryptAndSendData(encoder, encryptor, inputLayerID, outputLayerID)
+		// 中间层参与方：加密特征数据发送给输入层，加密标签数据发送给输出层
+		fmt.Printf("参与方 %d：作为中间层，加密特征数据发送给输入层 %d，加密标签数据发送给输出层 %d\n", p.ID, inputLayerID, outputLayerID)
+		return p.encryptAndSendDataToBothLayers(encoder, encryptor, inputLayerID, outputLayerID)
 	}
 }
 
@@ -433,5 +439,240 @@ func (p *Participant) encryptAndSendLabels(encoder *ckks.Encoder, encryptor *rlw
 	}
 
 	fmt.Printf("所有标签数据发送完成 (总样本数: %d)\n", totalSamples)
+	return nil
+}
+
+// encryptAndSendFeaturesToInput 加密并发送特征数据给输入层
+func (p *Participant) encryptAndSendFeaturesToInput(encoder *ckks.Encoder, encryptor *rlwe.Encryptor, inputLayerID int) error {
+	// 获取CKKS参数用于确定槽数
+	params := p.KeyManager.GetParams()
+	slots := params.N() / 2 // CKKS的槽数是N/2
+
+	totalSamples := len(p.Images)
+	totalFeatures := 156 // MNIST数据集的特征数
+
+	// 计算需要多少个批次来处理所有特征
+	// 每个槽存储一个特征值，所以每个批次可以处理slots个特征
+	totalFeaturesToProcess := totalSamples * totalFeatures
+	batchCount := (totalFeaturesToProcess + slots - 1) / slots // 向上取整
+
+	// 流式发送：每50个批次发送一次
+	batchSize := 50
+	totalBatches := (batchCount + batchSize - 1) / batchSize
+
+	// 当前批次的密文列表
+	var currentBatchCiphertexts []string
+
+	// 按批次处理所有特征
+	for batchIndex := 0; batchIndex < batchCount; batchIndex++ {
+		startFeatureIndex := batchIndex * slots
+		endFeatureIndex := startFeatureIndex + slots
+		if endFeatureIndex > totalFeaturesToProcess {
+			endFeatureIndex = totalFeaturesToProcess
+		}
+
+		// 准备当前批次的数据
+		batchData := make([]complex128, slots)
+		featuresInThisBatch := 0
+
+		for i := 0; i < slots; i++ {
+			globalFeatureIndex := startFeatureIndex + i
+			if globalFeatureIndex < totalFeaturesToProcess {
+				// 计算样本索引和特征索引
+				sampleIndex := globalFeatureIndex / totalFeatures
+				featureIndex := globalFeatureIndex % totalFeatures
+
+				if sampleIndex < len(p.Images) && featureIndex < len(p.Images[sampleIndex]) {
+					// 归一化特征值到[0,1]范围
+					batchData[i] = complex(p.Images[sampleIndex][featureIndex]/255.0, 0)
+					featuresInThisBatch++
+				} else {
+					batchData[i] = complex(0, 0)
+				}
+			} else {
+				batchData[i] = complex(0, 0) // 填充0
+			}
+		}
+
+		// 编码
+		pt := ckks.NewPlaintext(p.KeyManager.GetParams(), p.KeyManager.GetParams().MaxLevel())
+		if err := encoder.Encode(batchData, pt); err != nil {
+			return fmt.Errorf("编码特征数据批次 %d 失败: %v", batchIndex, err)
+		}
+
+		// 加密
+		ct, err := encryptor.EncryptNew(pt)
+		if err != nil {
+			return fmt.Errorf("加密特征数据批次 %d 失败: %v", batchIndex, err)
+		}
+
+		// 序列化密文
+		ctBytes, err := utils.EncodeShare(ct)
+		if err != nil {
+			return fmt.Errorf("序列化特征密文批次 %d 失败: %v", batchIndex, err)
+		}
+
+		// 添加到当前发送批次
+		currentBatchCiphertexts = append(currentBatchCiphertexts, utils.EncodeToBase64(ctBytes))
+
+		// 检查是否需要发送当前批次
+		if len(currentBatchCiphertexts) >= batchSize || batchIndex == batchCount-1 {
+			sendBatchIndex := (batchIndex / batchSize) + 1
+			fmt.Printf("发送特征数据批次 %d/%d (包含 %d 个密文)...\n", sendBatchIndex, totalBatches, len(currentBatchCiphertexts))
+
+			// 构造消息
+			message := DataMessage{
+				Type:      "feature_batch",
+				From:      p.ID,
+				Data:      utils.EncodeToBase64([]byte(fmt.Sprintf("%d,%d", sendBatchIndex, totalBatches))), // 发送批次信息
+				BatchData: currentBatchCiphertexts,                                                          // 当前批次的密文数据
+			}
+
+			// 发送消息
+			messageJSON, err := json.Marshal(message)
+			if err != nil {
+				return fmt.Errorf("序列化特征消息批次 %d 失败: %v", sendBatchIndex, err)
+			}
+
+			if err := p.SendMessageToParticipant(inputLayerID, string(messageJSON)); err != nil {
+				return fmt.Errorf("发送特征数据批次 %d 到参与方 %d 失败: %v", sendBatchIndex, inputLayerID, err)
+			}
+
+			fmt.Printf("特征数据批次 %d/%d 发送完成\n", sendBatchIndex, totalBatches)
+
+			// 清空当前批次
+			currentBatchCiphertexts = nil
+		}
+	}
+
+	fmt.Printf("所有特征数据发送完成 (总样本数: %d, 总特征数: %d)\n", totalSamples, totalFeaturesToProcess)
+	return nil
+}
+
+// encryptAndSendLabelsToOutput 加密并发送标签数据给输出层
+func (p *Participant) encryptAndSendLabelsToOutput(encoder *ckks.Encoder, encryptor *rlwe.Encryptor, outputLayerID int) error {
+	// 获取CKKS参数用于确定槽数
+	params := p.KeyManager.GetParams()
+	slots := params.N() / 2 // CKKS的槽数是N/2
+
+	fmt.Printf("向参与方 %d 发送标签数据...\n", outputLayerID)
+
+	totalSamples := len(p.Labels)
+
+	fmt.Printf("开始加密 %d 个样本的标签数据\n", totalSamples)
+
+	// 计算需要多少个批次来处理所有标签
+	// 每个槽存储一个标签值
+	batchCount := (totalSamples + slots - 1) / slots // 向上取整
+
+	fmt.Printf("需要 %d 个批次来处理所有标签数据 (每批次 %d 个槽)\n", batchCount, slots)
+
+	// 流式发送：每20个批次发送一次
+	batchSize := 20
+	totalBatches := (batchCount + batchSize - 1) / batchSize
+
+	fmt.Printf("将分 %d 次发送，每次发送 %d 个批次\n", totalBatches, batchSize)
+
+	// 当前批次的密文列表
+	var currentBatchCiphertexts []string
+
+	// 按批次处理所有标签
+	for batchIndex := 0; batchIndex < batchCount; batchIndex++ {
+		startSampleIndex := batchIndex * slots
+		endSampleIndex := startSampleIndex + slots
+		if endSampleIndex > totalSamples {
+			endSampleIndex = totalSamples
+		}
+
+		// 准备当前批次的数据
+		batchData := make([]complex128, slots)
+		labelsInThisBatch := 0
+
+		for i := 0; i < slots; i++ {
+			sampleIndex := startSampleIndex + i
+			if sampleIndex < totalSamples {
+				// 将标签转换为复数
+				label := p.Labels[sampleIndex]
+				batchData[i] = complex(float64(label), 0)
+				labelsInThisBatch++
+			} else {
+				batchData[i] = complex(0, 0) // 填充0
+			}
+		}
+
+		// 编码
+		pt := ckks.NewPlaintext(p.KeyManager.GetParams(), p.KeyManager.GetParams().MaxLevel())
+		if err := encoder.Encode(batchData, pt); err != nil {
+			return fmt.Errorf("编码标签数据批次 %d 失败: %v", batchIndex, err)
+		}
+
+		// 加密
+		ct, err := encryptor.EncryptNew(pt)
+		if err != nil {
+			return fmt.Errorf("加密标签数据批次 %d 失败: %v", batchIndex, err)
+		}
+
+		// 序列化密文
+		ctBytes, err := utils.EncodeShare(ct)
+		if err != nil {
+			return fmt.Errorf("序列化标签密文批次 %d 失败: %v", batchIndex, err)
+		}
+
+		// 添加到当前发送批次
+		currentBatchCiphertexts = append(currentBatchCiphertexts, utils.EncodeToBase64(ctBytes))
+
+		// 每10个批次输出一次进度，减少日志输出
+		if (batchIndex+1)%10 == 0 || batchIndex == batchCount-1 {
+			fmt.Printf("标签数据加密进度: %d/%d 批次完成 (%.1f%%)\n",
+				batchIndex+1, batchCount, float64(batchIndex+1)/float64(batchCount)*100)
+		}
+
+		// 检查是否需要发送当前批次
+		if len(currentBatchCiphertexts) >= batchSize || batchIndex == batchCount-1 {
+			sendBatchIndex := (batchIndex / batchSize) + 1
+			fmt.Printf("发送标签数据批次 %d/%d (包含 %d 个密文)...\n", sendBatchIndex, totalBatches, len(currentBatchCiphertexts))
+
+			// 构造消息
+			message := DataMessage{
+				Type:      "label_batch",
+				From:      p.ID,
+				Data:      utils.EncodeToBase64([]byte(fmt.Sprintf("%d,%d", sendBatchIndex, totalBatches))), // 发送批次信息
+				BatchData: currentBatchCiphertexts,                                                          // 当前批次的密文数据
+			}
+
+			// 发送消息
+			messageJSON, err := json.Marshal(message)
+			if err != nil {
+				return fmt.Errorf("序列化标签消息批次 %d 失败: %v", sendBatchIndex, err)
+			}
+
+			if err := p.SendMessageToParticipant(outputLayerID, string(messageJSON)); err != nil {
+				return fmt.Errorf("发送标签数据批次 %d 到参与方 %d 失败: %v", sendBatchIndex, outputLayerID, err)
+			}
+
+			fmt.Printf("标签数据批次 %d/%d 发送完成\n", sendBatchIndex, totalBatches)
+
+			// 清空当前批次
+			currentBatchCiphertexts = nil
+		}
+	}
+
+	fmt.Printf("所有标签数据发送完成 (总样本数: %d)\n", totalSamples)
+	return nil
+}
+
+// encryptAndSendDataToBothLayers 加密并发送特征和标签数据给输入层和输出层
+func (p *Participant) encryptAndSendDataToBothLayers(encoder *ckks.Encoder, encryptor *rlwe.Encryptor, inputLayerID, outputLayerID int) error {
+
+	// 按批次加密和发送特征数据
+	if err := p.encryptAndSendFeaturesToInput(encoder, encryptor, inputLayerID); err != nil {
+		return fmt.Errorf("发送特征数据失败: %v", err)
+	}
+
+	// 按批次加密和发送标签数据
+	if err := p.encryptAndSendLabelsToOutput(encoder, encryptor, outputLayerID); err != nil {
+		return fmt.Errorf("发送标签数据失败: %v", err)
+	}
+
 	return nil
 }

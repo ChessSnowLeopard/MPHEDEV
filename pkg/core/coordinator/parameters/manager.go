@@ -34,26 +34,41 @@ type Manager struct {
 	dataSplitType string
 }
 
-// 新增：本地CKKS参数初始化函数，替代setup.InitParameters
 func initCKKSParameters() (ckks.Parameters, error) {
-	return ckks.NewParametersFromLiteral(
-		ckks.ParametersLiteral{
-			LogN:            14,
-			LogQ:            []int{55, 45, 45, 45, 45, 45, 45, 45},
-			LogP:            []int{61, 61, 61},
-			LogDefaultScale: 45,
-			Xs:              ring.Ternary{H: 192},
-		},
-	)
+	originalParams := ckks.ParametersLiteral{
+		LogN:            14,
+		LogQ:            []int{55, 45, 45, 45, 45, 45, 45, 45},
+		LogP:            []int{61},
+		LogDefaultScale: 45,
+		RingType:        ring.Standard,
+	}
+
+	fmt.Printf("输入参数: LogN=%d, LogQ=%v, LogP=%v\n",
+		originalParams.LogN, originalParams.LogQ, originalParams.LogP)
+
+	params, err := ckks.NewParametersFromLiteral(originalParams)
+	if err != nil {
+		fmt.Printf("[ERROR] 参数创建失败: %v\n", err)
+		return params, err
+	}
+
+	//使用正确的方法验证参数
+	fmt.Printf("[SUCCESS] 参数创建成功:\n")
+	fmt.Printf("  实际LogN: %d\n", params.LogN())
+	fmt.Printf("  Q模数数量: %d, 总位数: %.1f\n", params.QCount(), params.LogQ())
+	fmt.Printf("  P模数数量: %d, 总位数: %.1f\n", params.PCount(), params.LogP())
+	fmt.Printf("  默认精度: %d\n", params.LogDefaultScale())
+
+	return params, nil
 }
 
 // NewManager 创建新的参数管理器
 func NewManager(dataSplitType string) (*Manager, error) {
 	params, err := initCKKSParameters()
 	if err != nil {
+		fmt.Printf("参数初始化失败: %v\n", err)
 		return nil, err
 	}
-
 	// 生成伽罗瓦元素
 	btpParametersLit := bootstrapping.ParametersLiteral{
 		LogN: lattigoUtils.Pointy(params.LogN()),

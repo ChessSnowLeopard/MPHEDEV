@@ -74,7 +74,7 @@ type BatchStatus struct {
 // NewParticipant 创建新的参与方实例
 func NewParticipant() *Participant {
 	client := &types.HTTPClient{
-		Client: &http.Client{Timeout: 60 * time.Second},
+		Client: &http.Client{Timeout: 300 * time.Second}, // 增加到5分钟，给密钥传输留出足够时间
 	}
 
 	// 创建密钥管理器
@@ -230,6 +230,9 @@ func (p *Participant) UpdateOnlineParticipants() error {
 	// 从协调器获取在线参与方列表
 	onlineParticipants := p.HeartbeatManager.GetOnlinePeers()
 
+	// 清空之前的参与方列表
+	p.PeerManager.ClearPeers()
+
 	// 更新P2P网络管理器中的参与方列表
 	for id, url := range onlineParticipants {
 		if id != p.ID { // 不添加自己
@@ -237,12 +240,14 @@ func (p *Participant) UpdateOnlineParticipants() error {
 		}
 	}
 
-	// 统计时包含自己
-	totalOnline := len(onlineParticipants) + 1 // 加上自己
+	// 统计在线参与方数量（onlineParticipants已经包含所有在线参与方）
+	totalOnline := len(onlineParticipants)
 	fmt.Printf("当前在线参与方: %d 个 (包括自己)\n", totalOnline)
 	fmt.Printf("  参与方 %d: %s (自己)\n", p.ID, p.HTTPServer.GetLocalIP())
 	for id, url := range onlineParticipants {
-		fmt.Printf("  参与方 %d: %s\n", id, url)
+		if id != p.ID { // 只显示其他参与方
+			fmt.Printf("  参与方 %d: %s\n", id, url)
+		}
 	}
 
 	return nil
@@ -304,7 +309,6 @@ func (p *Participant) RequestCollaborativeRefresh() error {
 func (p *Participant) RunMainLoop() {
 	// 进入菜单模式，启用静默模式
 	p.SetSilentMode(true)
-
 	for {
 		fmt.Println("\n请选择操作：")
 		fmt.Println("1. 发起协同解密请求")
@@ -327,22 +331,22 @@ func (p *Participant) RunMainLoop() {
 				fmt.Println("[错误] 在线状态检查失败:", err)
 				continue
 			}
-
 			// 发起协同解密请求
 			if err := p.RequestCollaborativeDecrypt(); err != nil {
 				fmt.Printf("[错误] 协同解密失败: %v\n", err)
 			}
+			continue
 		case 2:
 			// 先检查在线状态
 			if err := p.CheckOnlineStatusBeforeOperation(); err != nil {
 				fmt.Println("[错误] 在线状态检查失败:", err)
 				continue
 			}
-
 			// 发起协同刷新请求
 			if err := p.RequestCollaborativeRefresh(); err != nil {
 				fmt.Printf("[错误] 协同刷新失败: %v\n", err)
 			}
+			continue
 		case 3:
 			// 临时禁用静默模式以显示状态
 			p.SetSilentMode(false)
@@ -351,6 +355,7 @@ func (p *Participant) RunMainLoop() {
 			}
 			// 重新启用静默模式
 			p.SetSilentMode(true)
+			continue
 		case 4:
 			fmt.Println("退出程序。")
 			p.StopHeartbeat()

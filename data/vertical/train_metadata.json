@@ -1,45 +1,21 @@
 {
-  "num_splits": 5,
+  "num_splits": 2,
   "format": "csv",
   "splits_info": [
     {
       "split_id": "train_split_000",
       "num_samples": 60000,
-      "num_features": 156,
+      "num_features": 392,
       "image_shape": [
-        156
+        392
       ]
     },
     {
       "split_id": "train_split_001",
       "num_samples": 60000,
-      "num_features": 156,
+      "num_features": 392,
       "image_shape": [
-        156
-      ]
-    },
-    {
-      "split_id": "train_split_002",
-      "num_samples": 60000,
-      "num_features": 156,
-      "image_shape": [
-        156
-      ]
-    },
-    {
-      "split_id": "train_split_003",
-      "num_samples": 60000,
-      "num_features": 156,
-      "image_shape": [
-        156
-      ]
-    },
-    {
-      "split_id": "train_split_004",
-      "num_samples": 60000,
-      "num_features": 160,
-      "image_shape": [
-        160
+        392
       ]
     }
   ]
