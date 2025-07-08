@@ -4,11 +4,15 @@ import (
 	"MPHEDev/pkg/core/coordinator/services"
 	"fmt"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
 	router := gin.Default()
+	// 添加CORS中间件
+
+	router.Use(cors.Default())
 
 	// 注册初始化协调器的接口
 	router.POST("/api/coordinator/init", services.InitHandler)
