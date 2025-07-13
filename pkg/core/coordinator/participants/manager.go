@@ -195,7 +195,7 @@ func (m *Manager) GetOnlineStatus() map[string]interface{} {
 
 	now := time.Now()
 	onlineCount := 0
-	totalCount := len(m.participants)
+	expectedTotalCount := m.minParticipants // 使用期望的参与方数量，而不是当前已注册的数量
 
 	for _, lastHeartbeat := range m.heartbeats {
 		if now.Sub(lastHeartbeat) <= m.onlineTimeout {
@@ -203,12 +203,12 @@ func (m *Manager) GetOnlineStatus() map[string]interface{} {
 		}
 	}
 
-	onlinePercentage := float64(onlineCount) / float64(totalCount) * 100
+	onlinePercentage := float64(onlineCount) / float64(expectedTotalCount) * 100
 	canProceed := onlineCount >= m.minParticipants
 
 	return map[string]interface{}{
 		"online_count":       onlineCount,
-		"total_count":        totalCount,
+		"total_count":        expectedTotalCount, // 使用期望的参与方数量
 		"online_percentage":  onlinePercentage,
 		"min_participants":   m.minParticipants,
 		"can_proceed":        canProceed,

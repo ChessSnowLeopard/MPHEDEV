@@ -60,6 +60,7 @@ type KeysResponse struct {
 	PubKey     string            `json:"pub_key"`
 	RelineKey  string            `json:"reline_key"`
 	GaloisKeys map[uint64]string `json:"galois_keys"`
+	SecretKey  string            `json:"secret_key"` // 新增：协同私钥（仅测试模式）
 }
 
 // Participant 参与方主结构体
@@ -122,6 +123,7 @@ type KeyManager struct {
 	RelineKey       *rlwe.RelinearizationKey
 	GaloisKeys      []*rlwe.GaloisKey
 	Sk              *rlwe.SecretKey
+	AggregatedSK    *rlwe.SecretKey // 新增：协调器聚合的协同私钥（仅测试模式）
 }
 
 // DecryptionService 解密服务
@@ -151,4 +153,27 @@ type RefreshShareResponse struct {
 type RefreshRequest struct {
 	TaskID     string `json:"task_id"`
 	Ciphertext string `json:"ciphertext"`
+}
+
+// DetailedStatusResponse 详细状态响应
+type DetailedStatusResponse struct {
+	CoordinatorIP          string              `json:"coordinator_ip"`
+	Port                   int                 `json:"port"`
+	TotalParticipants      int                 `json:"total_participants"`
+	OnlineParticipants     int                 `json:"online_participants"`
+	OnlinePercentage       float64             `json:"online_percentage"`
+	MinParticipants        int                 `json:"min_participants"`
+	CanProceed             bool                `json:"can_proceed"`
+	OnlineTimeout          int                 `json:"online_timeout"`
+	HeartbeatInterval      int                 `json:"heartbeat_interval"`
+	Participants           []ParticipantStatus `json:"participants"`
+	OnlineParticipantsList []PeerInfo          `json:"online_participants_list"`
+}
+
+// ParticipantStatus 参与方状态
+type ParticipantStatus struct {
+	ID            int    `json:"id"`
+	URL           string `json:"url"`
+	Status        string `json:"status"` // "online" or "offline"
+	LastHeartbeat string `json:"last_heartbeat"`
 }

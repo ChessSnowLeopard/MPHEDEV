@@ -300,7 +300,6 @@ func (cc *CoordinatorClient) WaitForCompletion() error {
 
 // GetAggregatedKeys 获取聚合后的密钥
 func (cc *CoordinatorClient) GetAggregatedKeys() (*types.KeysResponse, error) {
-	fmt.Printf("开始请求聚合密钥...\n")
 
 	resp, err := cc.client.Client.Get(cc.baseURL + "/keys/aggregated")
 	if err != nil {
@@ -317,4 +316,48 @@ func (cc *CoordinatorClient) GetAggregatedKeys() (*types.KeysResponse, error) {
 
 	fmt.Printf("成功获取聚合密钥，包含 %d 个伽罗瓦密钥\n", len(keys.GaloisKeys))
 	return &keys, nil
+}
+
+// GetDetailedStatus 获取协调器详细状态
+func (cc *CoordinatorClient) GetDetailedStatus() (*types.DetailedStatusResponse, error) {
+	resp, err := cc.client.Client.Get(cc.baseURL + "/status")
+	if err != nil {
+		return nil, fmt.Errorf("获取详细状态失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var status types.DetailedStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return nil, fmt.Errorf("解析详细状态失败: %v", err)
+	}
+
+	return &status, nil
+}
+
+// SendComputationDone 发送计算完成消息给协调器
+func (cc *CoordinatorClient) SendComputationDone(batchID int, status string) error {
+	reqBody := map[string]interface{}{
+		"participant_id": cc.participantID,
+		"batch_id":       batchID,
+		"status":         status,
+		"timestamp":      time.Now().Unix(),
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("序列化Done消息失败: %v", err)
+	}
+
+	resp, err := cc.client.Client.Post(cc.baseURL+"/computation/done", "application/json", bytes.NewReader(jsonData))
+	if err != nil {
+		return fmt.Errorf("发送Done消息失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("发送Done消息失败，状态码: %d", resp.StatusCode)
+	}
+
+	fmt.Printf("✓ 计算完成消息已发送给协调器 (批次: %d, 状态: %s)\n", batchID, status)
+	return nil
 }

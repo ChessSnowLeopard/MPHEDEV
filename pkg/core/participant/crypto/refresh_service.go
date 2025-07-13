@@ -267,3 +267,133 @@ func (rs *RefreshService) FinalizeCollaborativeRefresh(ct *rlwe.Ciphertext, shar
 
 	return refreshed, nil
 }
+
+// RefreshCiphertextsSync 同步刷新密文集合
+func (rs *RefreshService) RefreshCiphertextsSync(
+	ciphertexts []*rlwe.Ciphertext,
+	onlinePeers map[int]string,
+	myID int,
+	taskID string,
+) ([]*rlwe.Ciphertext, error) {
+	if len(ciphertexts) == 0 {
+		return nil, fmt.Errorf("密文集合为空")
+	}
+
+	if len(onlinePeers) == 0 {
+		return nil, fmt.Errorf("在线参与方列表为空")
+	}
+
+	fmt.Printf("🔄 开始同步刷新 %d 个密文...\n", len(ciphertexts))
+
+	// 为每个密文生成本地刷新份额
+	myShares := make([]multiparty.RefreshShare, len(ciphertexts))
+	for i, ct := range ciphertexts {
+		share, err := rs.GenerateRefreshShare(ct, fmt.Sprintf("%s_%d", taskID, i))
+		if err != nil {
+			return nil, fmt.Errorf("生成密文%d的刷新份额失败: %v", i, err)
+		}
+		myShares[i] = share
+	}
+
+	// 向所有在线Peers（不包括自己）并发请求刷新份额
+	type peerResp struct {
+		PeerID int
+		Shares []multiparty.RefreshShare
+		Err    error
+	}
+	results := make(chan peerResp, len(onlinePeers)-1)
+
+	fmt.Printf("向 %d 个在线参与方请求刷新份额...\n", len(onlinePeers)-1)
+	for peerID, peerURL := range onlinePeers {
+		if peerID == myID {
+			continue // 跳过自己
+		}
+		go func(peerID int, peerURL string) {
+			// 为每个密文构造请求
+			peerShares := make([]multiparty.RefreshShare, len(ciphertexts))
+			for i, ct := range ciphertexts {
+				// 序列化密文
+				ctBytes, err := utils.EncodeShare(ct)
+				if err != nil {
+					results <- peerResp{PeerID: peerID, Err: fmt.Errorf("密文%d序列化失败: %v", i, err)}
+					return
+				}
+				ctB64 := utils.EncodeToBase64(ctBytes)
+
+				// 构造请求体
+				reqBody, _ := json.Marshal(types.RefreshRequest{
+					TaskID:     fmt.Sprintf("%s_%d", taskID, i),
+					Ciphertext: ctB64,
+				})
+
+				// 发送请求
+				resp, err := rs.client.Client.Post(peerURL+"/partial_refresh", "application/json", bytes.NewReader(reqBody))
+				if err != nil {
+					results <- peerResp{PeerID: peerID, Err: fmt.Errorf("请求密文%d刷新份额失败: %v", i, err)}
+					return
+				}
+				defer resp.Body.Close()
+
+				// 解析响应
+				var respData types.RefreshShareResponse
+				if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+					results <- peerResp{PeerID: peerID, Err: fmt.Errorf("解析密文%d响应失败: %v", i, err)}
+					return
+				}
+
+				// 解析份额
+				shareBytes, err := utils.DecodeFromBase64(respData.Share)
+				if err != nil {
+					results <- peerResp{PeerID: peerID, Err: fmt.Errorf("解码密文%d份额失败: %v", i, err)}
+					return
+				}
+				var share multiparty.RefreshShare
+				if err := utils.DecodeShare(shareBytes, &share); err != nil {
+					results <- peerResp{PeerID: peerID, Err: fmt.Errorf("反序列化密文%d份额失败: %v", i, err)}
+					return
+				}
+				peerShares[i] = share
+			}
+			results <- peerResp{PeerID: peerID, Shares: peerShares}
+		}(peerID, peerURL)
+	}
+
+	// 收集所有份额
+	allShares := make([][]multiparty.RefreshShare, len(ciphertexts))
+	for i := range allShares {
+		allShares[i] = []multiparty.RefreshShare{myShares[i]} // 包含自己的份额
+	}
+
+	successCount := 1 // 包括自己的份额
+	for i := 0; i < len(onlinePeers)-1; i++ {
+		res := <-results
+		if res.Err != nil {
+			fmt.Printf("[警告] 获取参与方 %d 刷新份额失败: %v\n", res.PeerID, res.Err)
+			continue
+		}
+		// 将每个参与方的份额添加到对应的密文份额集合中
+		for j, share := range res.Shares {
+			if j < len(allShares) {
+				allShares[j] = append(allShares[j], share)
+			}
+		}
+		successCount++
+	}
+
+	fmt.Printf("成功收集 %d 个参与方的刷新份额\n", successCount)
+
+	// 对每个密文进行刷新
+	refreshedCiphertexts := make([]*rlwe.Ciphertext, len(ciphertexts))
+	for i, ct := range ciphertexts {
+		fmt.Printf("刷新密文 %d/%d...\n", i+1, len(ciphertexts))
+		refreshed, err := rs.FinalizeCollaborativeRefresh(ct, allShares[i], fmt.Sprintf("%s_%d", taskID, i))
+		if err != nil {
+			return nil, fmt.Errorf("刷新密文%d失败: %v", i, err)
+		}
+		refreshedCiphertexts[i] = refreshed
+		fmt.Printf("密文%d刷新完成: Level从 %d 提升到 %d\n", i, ct.Level(), refreshed.Level())
+	}
+
+	fmt.Printf("✅ 同步刷新完成，共刷新 %d 个密文\n", len(refreshedCiphertexts))
+	return refreshedCiphertexts, nil
+}

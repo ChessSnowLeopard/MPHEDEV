@@ -9,7 +9,6 @@ import (
 	"github.com/tuneinsight/lattigo/v6/multiparty"
 	"github.com/tuneinsight/lattigo/v6/ring"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
-	lattigoUtils "github.com/tuneinsight/lattigo/v6/utils"
 	"github.com/tuneinsight/lattigo/v6/utils/sampling"
 )
 
@@ -34,13 +33,26 @@ type Manager struct {
 	dataSplitType string
 }
 
+// RotationConfig 旋转配置（参考MNIST_CNN）
+type RotationConfig struct {
+	// 基本旋转位数
+	BasicRotations []int
+	// 批处理相关的旋转
+	BatchRotations []int
+	// 是否包含所有2的幂次旋转
+	IncludePowerOfTwo bool
+	// 最大旋转范围
+	MaxRotation int
+}
+
 func initCKKSParameters() (ckks.Parameters, error) {
+	// 参考MNIST_CNN的参数设置
 	originalParams := ckks.ParametersLiteral{
 		LogN:            14,
-		LogQ:            []int{55, 45, 45, 45, 45, 45, 45, 45},
-		LogP:            []int{61},
+		LogQ:            []int{55, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45},
+		LogP:            []int{61, 61, 61},
 		LogDefaultScale: 45,
-		RingType:        ring.Standard,
+		Xs:              ring.Ternary{H: 192},
 	}
 
 	fmt.Printf("输入参数: LogN=%d, LogQ=%v, LogP=%v\n",
@@ -62,6 +74,81 @@ func initCKKSParameters() (ckks.Parameters, error) {
 	return params, nil
 }
 
+// generateOptimizedGaloisElements 生成优化的伽罗瓦元素（参考MNIST_CNN）
+func generateOptimizedGaloisElements(params ckks.Parameters) []uint64 {
+
+	// 根据实际数据打包配置计算所需的旋转值
+	// slotCount=8192, featureCount=64, batchSize=128
+	// 旋转值 = batchSize * (2^step) = 128 * (1,2,4,8,16,32,64,128,256,512,1024,2048,4096...)
+	// math.Log2(64) = 6，所以step从0到5，最大旋转值是4096
+	rotConfig := RotationConfig{
+		BasicRotations:    []int{128, 256, 512, 1024, 2048, 4096}, // 实际需要的旋转值
+		BatchRotations:    []int{},                                // 空
+		MaxRotation:       4096,                                   // 最大旋转4096
+		IncludePowerOfTwo: false,                                  // 不需要
+	}
+
+	// 获取自举所需的伽罗瓦元素
+	logN := params.LogN()
+	btpParametersLit := bootstrapping.ParametersLiteral{
+		LogN: &logN,
+		LogP: params.LogPi(),
+		Xs:   params.Xs(),
+	}
+	btpParams, err := bootstrapping.NewParametersFromLiteral(params, btpParametersLit)
+	if err != nil {
+		fmt.Printf("自举参数创建失败: %v\n", err)
+		return nil
+	}
+	bootstrapGalEls := btpParams.GaloisElements(params)
+
+	// 生成旋转所需的伽罗瓦元素
+	galElsMap := make(map[uint64]bool)
+
+	// 添加自举元素
+	fmt.Printf("添加 %d 个自举所需的伽罗瓦元素\n", len(bootstrapGalEls))
+	for _, el := range bootstrapGalEls {
+		galElsMap[el] = true
+	}
+
+	// 添加基本旋转
+	fmt.Printf("添加基本旋转: %v\n", rotConfig.BasicRotations)
+	for _, k := range rotConfig.BasicRotations {
+		galElsMap[params.GaloisElement(k)] = true
+		if k != 0 { // 避免重复添加0
+			galElsMap[params.GaloisElement(-k)] = true // 同时添加反向旋转
+		}
+	}
+
+	// 添加批处理旋转
+	fmt.Printf("添加批处理旋转: %v\n", rotConfig.BatchRotations)
+	for _, k := range rotConfig.BatchRotations {
+		galElsMap[params.GaloisElement(k)] = true
+		galElsMap[params.GaloisElement(-k)] = true
+	}
+
+	// 如果需要，添加所有2的幂次旋转
+	if rotConfig.IncludePowerOfTwo {
+		fmt.Printf("添加2的幂次旋转（最大到%d）\n", rotConfig.MaxRotation)
+		for i := 0; i < params.LogN(); i++ {
+			k := 1 << i
+			if k <= rotConfig.MaxRotation {
+				galElsMap[params.GaloisElement(k)] = true
+				galElsMap[params.GaloisElement(-k)] = true
+			}
+		}
+	}
+
+	// 转换为切片
+	galEls := make([]uint64, 0, len(galElsMap))
+	for el := range galElsMap {
+		galEls = append(galEls, el)
+	}
+
+	fmt.Printf("总共生成 %d 个伽罗瓦密钥（包括自举和旋转）\n", len(galEls))
+	return galEls
+}
+
 // NewManager 创建新的参数管理器
 func NewManager(dataSplitType string) (*Manager, error) {
 	params, err := initCKKSParameters()
@@ -69,17 +156,12 @@ func NewManager(dataSplitType string) (*Manager, error) {
 		fmt.Printf("参数初始化失败: %v\n", err)
 		return nil, err
 	}
-	// 生成伽罗瓦元素
-	btpParametersLit := bootstrapping.ParametersLiteral{
-		LogN: lattigoUtils.Pointy(params.LogN()),
-		LogP: params.LogPi(),
-		Xs:   params.Xs(),
+
+	// 使用优化的伽罗瓦元素生成（参考MNIST_CNN）
+	galEls := generateOptimizedGaloisElements(params)
+	if galEls == nil {
+		return nil, fmt.Errorf("生成伽罗瓦元素失败")
 	}
-	btpParams, err := bootstrapping.NewParametersFromLiteral(params, btpParametersLit)
-	if err != nil {
-		return nil, err
-	}
-	galEls := btpParams.GaloisElements(params)
 
 	// 生成一个统一的CRS种子（用于所有参与方生成相同的CRP）
 	commonCRSSeed := []byte("common_crs_seed_32_bytes_long_for_all")

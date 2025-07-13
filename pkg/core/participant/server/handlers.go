@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"github.com/gorilla/websocket"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 )
 
 // Handlers HTTP处理器集合
@@ -31,16 +31,17 @@ func NewHandlers(keyManager *crypto.KeyManager, decryptionService *crypto.Decryp
 // GetHandlers 获取所有处理器
 func (h *Handlers) GetHandlers() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"/health":          h.handleHealth,
-		"/bootstrap":       h.handleBootstrap,
-		"/partial_decrypt": h.handlePartialDecrypt,
-		"/partial_refresh": h.handlePartialRefresh,
-		"/keys/receive":    h.handleReceiveKeys,
+		"/health":                                h.handleHealth,
+		"/bootstrap":                             h.handleBootstrap,
+		"/partial_decrypt":                       h.handlePartialDecrypt,
+		"/partial_refresh":                       h.handlePartialRefresh,
+		"/keys/receive":                          h.handleReceiveKeys,
 		"/api/participant/collaborative-decrypt": h.handleCollaborativeDecrypt,
 		"/api/participant/collaborative-refresh": h.handleCollaborativeRefresh,
 		"/api/participant/ws": func(w http.ResponseWriter, r *http.Request) {
 			h.handleParticipantWS(w, r)
 		},
+		"/ctcnn/output": h.handleCtCNNOutput,
 	}
 }
 
@@ -242,4 +243,37 @@ func (h *Handlers) handleParticipantWS(w http.ResponseWriter, r *http.Request) {
 		Port: port,
 	}
 	conn.WriteJSON(msg)
+}
+
+// CtCNNOutput 输出消息结构
+type CtCNNOutput struct {
+	Type      string `json:"type"`      // "output" 或 "error"
+	Content   string `json:"content"`   // 输出内容
+	Timestamp int64  `json:"timestamp"` // 时间戳
+}
+
+// handleCtCNNOutput 处理ctCNN输出
+func (h *Handlers) handleCtCNNOutput(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var output CtCNNOutput
+	if err := json.NewDecoder(r.Body).Decode(&output); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// 打印接收到的输出（用于调试）
+	fmt.Printf("📡 接收到ctCNN输出 [%s]: %s\n", output.Type, output.Content)
+
+	// TODO: 这里可以将输出转发到前端
+	// 可以通过WebSocket、HTTP API或其他方式发送给前端
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "output_received",
+		"type":   output.Type,
+	})
 }

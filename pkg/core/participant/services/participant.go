@@ -3,14 +3,18 @@ package services
 import (
 	"MPHEDev/pkg/core/participant/coordinator"
 	"MPHEDev/pkg/core/participant/crypto"
+	"MPHEDev/pkg/core/participant/data_management"
+	"MPHEDev/pkg/core/participant/hidden_layer"
+	"MPHEDev/pkg/core/participant/input_layer"
+	"MPHEDev/pkg/core/participant/interfaces"
 	"MPHEDev/pkg/core/participant/network"
+	"MPHEDev/pkg/core/participant/output_layer"
 	"MPHEDev/pkg/core/participant/server"
+	"MPHEDev/pkg/core/participant/sync"
 	"MPHEDev/pkg/core/participant/types"
 	"MPHEDev/pkg/core/participant/utils"
 	"fmt"
-	"io/ioutil"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/tuneinsight/lattigo/v6/multiparty"
@@ -37,38 +41,25 @@ type Participant struct {
 	DecryptionService *crypto.DecryptionService
 	RefreshService    *crypto.RefreshService
 
+	// 服务组件
+	MessageProcessor *MessageProcessor
+	RegistryService  *RegistryService
+
+	// 数据管理器
+	DataManager *data_management.DataManager
+
+	// 数据打包服务
+	DataPackingService *data_management.DataPackingService
+
+	// 层处理器（使用接口避免循环导入）
+	LayerProcessor interfaces.LayerProcessor
+
+	// 同步服务
+	SyncService sync.SyncService
+
 	// 状态管理
 	Ready   bool
 	ReadyCh chan struct{}
-
-	// 数据集相关
-	Images    [][]float64 // 载入的图像数据
-	Labels    []int       // 载入的标签数据
-	DataSplit string      // 数据分片类型：vertical 或 horizontal
-
-	// 数据分发状态
-	ReceivedFeatures     map[int]bool // 已接收特征数据的参与方ID
-	ReceivedLabels       map[int]bool // 已接收标签数据的参与方ID
-	DataDistributionDone bool         // 数据分发是否完成
-
-	// 输入层和输出层Done状态
-	InputLayerDone  bool // 输入层数据分发完成
-	OutputLayerDone bool // 输出层数据分发完成
-
-	// 分批接收状态管理
-	FeatureBatchStatus map[int]*BatchStatus // 每个参与方的特征批次状态
-	LabelBatchStatus   map[int]*BatchStatus // 每个参与方的标签批次状态
-
-	// 接收到的密文数据存储
-	ReceivedFeatureCiphertexts map[int][][]string // 每个参与方的特征密文批次
-	ReceivedLabelCiphertexts   map[int][][]string // 每个参与方的标签密文批次
-}
-
-// BatchStatus 批次状态
-type BatchStatus struct {
-	TotalBatches    int          // 总批次数
-	ReceivedBatches map[int]bool // 已接收的批次
-	AllReceived     bool         // 是否全部接收完成
 }
 
 // NewParticipant 创建新的参与方实例
@@ -86,190 +77,98 @@ func NewParticipant() *Participant {
 	// 创建刷新服务
 	refreshService := crypto.NewRefreshService(keyManager, client)
 
-	return &Participant{
-		Client:                     client,
-		KeyManager:                 keyManager,
-		DecryptionService:          decryptionService,
-		RefreshService:             refreshService,
-		ReadyCh:                    make(chan struct{}),
-		ReceivedFeatures:           make(map[int]bool),
-		ReceivedLabels:             make(map[int]bool),
-		DataDistributionDone:       false,
-		InputLayerDone:             false,
-		OutputLayerDone:            false,
-		FeatureBatchStatus:         make(map[int]*BatchStatus),
-		LabelBatchStatus:           make(map[int]*BatchStatus),
-		ReceivedFeatureCiphertexts: make(map[int][][]string),
-		ReceivedLabelCiphertexts:   make(map[int][][]string),
+	participant := &Participant{
+		Client:            client,
+		KeyManager:        keyManager,
+		DecryptionService: decryptionService,
+		RefreshService:    refreshService,
+		PeerManager:       network.NewPeerManager(),
+		ReadyCh:           make(chan struct{}),
 	}
-}
 
-func getLocalShardID(dataSplit string) string {
-	var dataDir string
-	if dataSplit == "vertical" {
-		dataDir = "../../data/vertical"
-	} else {
-		dataDir = "../../data/horizontal"
-	}
-	files, err := ioutil.ReadDir(dataDir)
-	if err != nil {
-		fmt.Printf("读取目录失败: %s, err=%v\n", dataDir, err)
-		return ""
-	}
-	fmt.Printf("扫描目录 %s，文件列表：\n", dataDir)
-	for _, f := range files {
-		fmt.Println("  ", f.Name())
-		if strings.HasPrefix(f.Name(), "train_split_") && strings.HasSuffix(f.Name(), "_images.csv") {
-			parts := strings.Split(f.Name(), "_")
-			if len(parts) >= 3 {
-				fmt.Printf("检测到分片文件: %s，分片ID: %s\n", f.Name(), parts[2])
-				return parts[2] // 000、001等
-			}
-		}
-	}
-	return ""
-}
+	// 初始化服务组件
+	participant.DataManager = data_management.NewDataManager()
+	participant.MessageProcessor = NewMessageProcessor(participant)
+	participant.RegistryService = NewRegistryService(participant)
 
-// autoDetectDataSplit 自动检测数据分片类型
-func autoDetectDataSplit() string {
-	if files, err := ioutil.ReadDir("../../data/vertical"); err == nil && len(files) > 0 {
-		for _, f := range files {
-			if strings.HasPrefix(f.Name(), "train_split_") && strings.HasSuffix(f.Name(), "_images.csv") {
-				return "vertical"
-			}
-		}
-	}
-	if files, err := ioutil.ReadDir("../../data/horizontal"); err == nil && len(files) > 0 {
-		for _, f := range files {
-			if strings.HasPrefix(f.Name(), "train_split_") && strings.HasSuffix(f.Name(), "_images.csv") {
-				return "horizontal"
-			}
-		}
-	}
-	return ""
+	// 初始化同步服务（暂时为nil，在设置参与方信息后初始化）
+	participant.SyncService = nil
+
+	// 初始化层处理器
+	// participant.InputLayerProcessor = input_layer.NewInputLayerProcessor(participant)
+	// participant.HiddenLayerProcessor = hidden_layer.NewHiddenLayerProcessor(participant)
+	// participant.OutputLayerProcessor = output_layer.NewOutputLayerProcessor(participant)
+
+	// 数据打包服务将在获取参数后初始化
+	participant.DataPackingService = nil
+
+	return participant
 }
 
 // Register 注册到协调器并启动P2P服务器
 func (p *Participant) Register(coordinatorURL string) error {
-	// 1. 自动检测数据集划分方式
-	dataSplit := autoDetectDataSplit()
-	if dataSplit == "" {
-		return fmt.Errorf("未找到本地分片文件，无法注册")
-	}
-	p.DataSplit = dataSplit
-	shardID := getLocalShardID(dataSplit)
-	if shardID == "" {
-		return fmt.Errorf("未找到本地分片文件，无法注册")
-	}
-	// 2. 创建协调器客户端
-	p.CoordinatorClient = coordinator.NewCoordinatorClient(coordinatorURL, p.Client)
-	// 3. 注册获取ID
-	regResp, err := p.CoordinatorClient.Register(shardID)
-	if err != nil {
-		return fmt.Errorf("注册失败: %v", err)
-	}
-	p.ID = regResp.ParticipantID
-
-	// 4. 设置端口
-	p.Port = 8081 // 使用固定端口8081，因为不同机器上运行
-
-	// 5. 创建P2P网络管理器
-	p.PeerManager = network.NewPeerManager()
-
-	// 6. 创建心跳管理器
-	p.HeartbeatManager = network.NewHeartbeatManager(coordinatorURL, p.Client, p.ID)
-
-	// 7. 启动P2P服务器
-	if err := p.startHTTPServer(); err != nil {
-		return fmt.Errorf("启动P2P服务器失败: %v", err)
-	}
-
-	// 8. 等待服务器启动
-	time.Sleep(1 * time.Second)
-
-	// 9. 向协调器上报自己的URL
-	if err := p.PeerManager.ReportURL(coordinatorURL, p.Client, p.ID, p.Port); err != nil {
-		return fmt.Errorf("上报URL失败: %v", err)
-	}
-
-	// 10. 获取其他参与方的URL
-	if err := p.PeerManager.DiscoverPeers(coordinatorURL, p.Client, p.ID); err != nil {
-		return fmt.Errorf("发现其他参与方失败: %v", err)
-	}
-
-	// 11. 启动心跳机制
-	p.HeartbeatManager.Start()
-
-	// 12. 启动在线状态监控
-	p.HeartbeatManager.StartOnlineStatusMonitor()
-
-	// 13. 发送初始心跳，确保自己能被识别为在线
-	if err := p.HeartbeatManager.SendInitialHeartbeat(); err != nil {
-		return fmt.Errorf("发送初始心跳失败: %v", err)
-	}
-
-	// 14. 获取参数并设置数据集划分方式
-	paramsResp, err := p.CoordinatorClient.GetParams()
-	if err != nil {
-		return fmt.Errorf("获取参数失败: %v", err)
-	}
-
-	// 设置数据集划分方式
-	p.DataSplit = paramsResp.DataSplitType
-
-	// 15. 获取在线成员列表
-	if err := p.UpdateOnlineParticipants(); err != nil {
-		return fmt.Errorf("获取在线成员列表失败: %v", err)
-	}
-
-	return nil
+	return p.RegistryService.Register(coordinatorURL)
 }
 
 // UpdateOnlineParticipants 更新在线参与方列表
 func (p *Participant) UpdateOnlineParticipants() error {
-	// 从协调器获取在线参与方列表
-	onlineParticipants := p.HeartbeatManager.GetOnlinePeers()
-
-	// 清空之前的参与方列表
-	p.PeerManager.ClearPeers()
-
-	// 更新P2P网络管理器中的参与方列表
-	for id, url := range onlineParticipants {
-		if id != p.ID { // 不添加自己
-			p.PeerManager.AddPeer(id, url)
-		}
-	}
-
-	// 统计在线参与方数量（onlineParticipants已经包含所有在线参与方）
-	totalOnline := len(onlineParticipants)
-	fmt.Printf("当前在线参与方: %d 个 (包括自己)\n", totalOnline)
-	fmt.Printf("  参与方 %d: %s (自己)\n", p.ID, p.HTTPServer.GetLocalIP())
-	for id, url := range onlineParticipants {
-		if id != p.ID { // 只显示其他参与方
-			fmt.Printf("  参与方 %d: %s\n", id, url)
-		}
-	}
-
-	return nil
-}
-
-// startHTTPServer 启动HTTP服务器
-func (p *Participant) startHTTPServer() error {
-	// 创建HTTP处理器
-	handlers := server.NewHandlers(p.KeyManager, p.DecryptionService, p.RefreshService)
-	handlerMap := handlers.GetHandlers()
-
-	// 创建HTTP服务器
-	p.HTTPServer = server.NewHTTPServer(p.Port, handlerMap, p)
-
-	// 启动服务器
-	return p.HTTPServer.Start()
+	return p.RegistryService.UpdateOnlineParticipants()
 }
 
 // GetParams 获取参数
 func (p *Participant) GetParams() error {
-	// 这里需要实现获取参数的逻辑
-	// 暂时返回nil
+	// 暂时使用默认参数，后续可以从协调器获取
+	fmt.Printf("使用默认CKKS参数初始化数据打包服务\n")
+
+	// 使用默认参数初始化数据打包服务
+	p.initializeDataPackingService()
+
+	return nil
+}
+
+// initializeDataPackingService 初始化数据打包服务
+func (p *Participant) initializeDataPackingService() {
+	// 暂时使用默认参数，后续可以从协调器获取
+	fmt.Printf("警告: 使用默认参数，数据打包服务功能受限\n")
+
+	// 推荐参数配置
+	slotCount := 8192  // CKKS slot数
+	featureCount := 64 // 每图像特征数k
+
+	// 创建数据打包服务（暂时不传入加密器）
+	p.DataPackingService = data_management.NewDataPackingService(slotCount, featureCount, ckks.Parameters{}, nil)
+
+	// 打印配置信息
+	p.DataPackingService.PrintConfiguration()
+}
+
+// UpdateDataPackingServiceWithKeys 在获取密钥后更新数据打包服务
+func (p *Participant) UpdateDataPackingServiceWithKeys() error {
+	if !p.KeyManager.IsReady() {
+		return fmt.Errorf("密钥管理器未准备就绪")
+	}
+
+	params := p.KeyManager.GetParams()
+	encryptor := p.KeyManager.GetEncryptor()
+	encoder := p.KeyManager.GetEncoder()
+
+	if encryptor == nil || encoder == nil {
+		return fmt.Errorf("无法获取加密器或编码器")
+	}
+
+	// 推荐参数配置
+	slotCount := 8192  // CKKS slot数
+	featureCount := 64 // 每图像特征数k
+
+	// 重新创建数据打包服务，包含完整的加密功能
+	p.DataPackingService = data_management.NewDataPackingService(slotCount, featureCount, params, encryptor)
+
+	// 更新编码器引用
+	p.DataPackingService.Encoder = encoder
+
+	fmt.Printf("✓ 数据打包服务已更新，加密功能已启用\n")
+	p.DataPackingService.PrintConfiguration()
+
 	return nil
 }
 
@@ -368,6 +267,11 @@ func (p *Participant) RunMainLoop() {
 
 // GetOnlineParticipants 获取在线参与方列表
 func (p *Participant) GetOnlineParticipants() map[int]string {
+	// 优先使用心跳管理器获取最新的在线参与方信息
+	if p.HeartbeatManager != nil {
+		return p.HeartbeatManager.GetOnlinePeers()
+	}
+	// 回退到PeerManager
 	return p.PeerManager.GetPeers()
 }
 
@@ -383,7 +287,17 @@ func (p *Participant) GetID() int {
 
 // GetDataSplit 获取数据划分方式
 func (p *Participant) GetDataSplit() string {
-	return p.DataSplit
+	return p.DataManager.GetDataSplit()
+}
+
+// HandleMessage 处理来自其他参与方的消息
+func (p *Participant) HandleMessage(fromID int, message string) {
+	p.MessageProcessor.HandleMessage(fromID, message)
+}
+
+// SendMessageToParticipant 向指定参与方发送消息
+func (p *Participant) SendMessageToParticipant(targetID int, message string) error {
+	return p.MessageProcessor.SendMessageToParticipant(targetID, message)
 }
 
 // GenerateAllCRPs 根据参数生成所有CRP
@@ -441,23 +355,293 @@ func (p *Participant) GenerateAllCRPs(paramsResp *types.ParamsResponse) error {
 	refreshCRSSeed := []byte("refresh_crs_seed_32_bytes_long")
 	paramsResp.RefreshCRS = utils.EncodeToBase64(refreshCRSSeed)
 
+	// 设置参数到KeyManager
+	p.KeyManager.SetParams(params)
+
 	fmt.Printf("参与方 %d 生成了所有CRP：公钥CRP、%d个伽罗瓦CRP、重线性化CRP、刷新CRS\n", p.ID, len(galoisCRPs))
+	fmt.Printf("✓ 参数已设置到密钥管理器\n")
 	return nil
 }
 
 // Unregister 注销参与方
 func (p *Participant) Unregister() error {
-	shardID := getLocalShardID(p.DataSplit)
-	if shardID == "" {
-		return fmt.Errorf("未找到本地分片文件，无法注销")
-	}
-	return p.CoordinatorClient.Unregister(shardID)
+	return p.RegistryService.Unregister()
 }
 
-// DataMessage 数据消息结构
-type DataMessage struct {
-	Type      string   `json:"type"` // "feature", "label", "done", "input_done", "output_done"
-	From      int      `json:"from"`
-	Data      string   `json:"data,omitempty"`       // base64编码的密文
-	BatchData []string `json:"batch_data,omitempty"` // base64编码的密文批次
+// DetermineRole 根据参与方ID判定角色
+func (p *Participant) DetermineRole() error {
+	// 从协调器获取详细状态，包含总参与方数量
+	detailedStatus, err := p.CoordinatorClient.GetDetailedStatus()
+	if err != nil {
+		return fmt.Errorf("获取协调器详细状态失败: %v", err)
+	}
+
+	// 设置总参与方数量
+	p.DataManager.SetTotalParticipants(detailedStatus.TotalParticipants)
+
+	// 根据参与方ID和总参与方数量判定角色
+	p.DataManager.DetermineRole(p.ID)
+
+	// 输出角色信息
+	fmt.Printf("参与方 %d 角色判定完成:\n", p.ID)
+	fmt.Printf("  总参与方数量: %d\n", detailedStatus.TotalParticipants)
+	fmt.Printf("  当前角色: %s (%s)\n", p.DataManager.GetRole(), p.DataManager.GetRoleDescription())
+	if p.DataManager.IsTestMode() {
+		fmt.Printf("  运行模式: 测试模式\n")
+	} else {
+		fmt.Printf("  运行模式: 正常模式\n")
+	}
+
+	return nil
+}
+
+// GetSyncService 获取同步服务
+func (p *Participant) GetSyncService() sync.SyncService {
+	return p.SyncService
+}
+
+// GetRole 获取当前角色
+func (p *Participant) GetRole() string {
+	return p.DataManager.GetRole()
+}
+
+// IsInputLayer 检查是否为输入层
+func (p *Participant) IsInputLayer() bool {
+	return p.DataManager.IsInputLayer()
+}
+
+// IsHiddenLayer 检查是否为隐藏层
+func (p *Participant) IsHiddenLayer() bool {
+	return p.DataManager.IsHiddenLayer()
+}
+
+// IsOutputLayer 检查是否为输出层
+func (p *Participant) IsOutputLayer() bool {
+	return p.DataManager.IsOutputLayer()
+}
+
+// GetInputLayerProcessor 获取输入层处理器
+func (p *Participant) GetInputLayerProcessor() (interfaces.FeatureCollector, bool) {
+	if inputProcessor, ok := p.LayerProcessor.(interfaces.FeatureCollector); ok {
+		return inputProcessor, true
+	}
+	return nil, false
+}
+
+// GetOutputLayerProcessor 获取输出层处理器
+func (p *Participant) GetOutputLayerProcessor() (interfaces.LabelCollector, bool) {
+	if outputProcessor, ok := p.LayerProcessor.(interfaces.LabelCollector); ok {
+		return outputProcessor, true
+	}
+	return nil, false
+}
+
+// ProcessDatasetWithPacking 根据角色处理数据集重排打包加密
+func (p *Participant) ProcessDatasetWithPacking() error {
+	if p.DataPackingService == nil {
+		return fmt.Errorf("数据打包服务未初始化")
+	}
+
+	role := p.GetRole()
+	fmt.Printf("\n=== 参与方 %d (%s) 数据集处理开始 ===\n", p.ID, role)
+
+	// 获取数据集
+	images := p.DataManager.GetImages()
+	if len(images) == 0 {
+		return fmt.Errorf("数据集为空")
+	}
+
+	fmt.Printf("数据集信息:\n")
+	fmt.Printf("  • 图像数量: %d\n", len(images))
+	fmt.Printf("  • 每图像特征数: %d\n", len(images[0]))
+	fmt.Printf("  • 数据划分方式: %s\n", p.DataManager.GetDataSplit())
+
+	// 根据角色设置对应的层处理器
+	switch role {
+	case "input_layer":
+		inputProcessor := input_layer.NewInputLayerProcessor(p.DataPackingService, p.DataManager, p.ID)
+		inputProcessor.SetParticipantInfo(p.PeerManager, p.MessageProcessor)
+		// 设置密钥管理器
+		inputProcessor.SetKeyManager(p.KeyManager)
+		p.LayerProcessor = inputProcessor
+		// 初始化同步服务
+		p.SyncService = sync.NewSyncService(p.ID, p.PeerManager, p.Client.Client)
+	case "hidden_layer":
+		// 创建权重管理器（修复参数传递）
+		weightManager := NewWeightManager(p.DataPackingService.GetSlotCount(), p.DataPackingService.GetFeatureCount(), p.DataPackingService.GetParams(), p.DataPackingService.GetEncryptor())
+		weightManager.SetEncoder(p.DataPackingService.GetEncoder())
+
+		hiddenProcessor := hidden_layer.NewHiddenLayerProcessor(p.DataPackingService, p.DataManager, p.ID, weightManager)
+		hiddenProcessor.SetParticipantInfo(p.PeerManager, p.MessageProcessor)
+		// 设置密钥管理器
+		hiddenProcessor.SetKeyManager(p.KeyManager)
+		p.LayerProcessor = hiddenProcessor
+		// 初始化同步服务
+		p.SyncService = sync.NewSyncService(p.ID, p.PeerManager, p.Client.Client)
+	case "output_layer":
+		// 创建权重管理器（修复参数传递）
+		weightManager := NewWeightManager(p.DataPackingService.GetSlotCount(), p.DataPackingService.GetFeatureCount(), p.DataPackingService.GetParams(), p.DataPackingService.GetEncryptor())
+		weightManager.SetEncoder(p.DataPackingService.GetEncoder())
+
+		outputProcessor := output_layer.NewOutputLayerProcessor(p.DataPackingService, p.DataManager, p.ID, weightManager)
+		outputProcessor.SetParticipantInfo(p.PeerManager, p.MessageProcessor)
+		// 设置密钥管理器
+		outputProcessor.SetKeyManager(p.KeyManager)
+		// 设置刷新服务
+		if p.RefreshService != nil {
+			outputProcessor.SetRefreshService(p.RefreshService)
+		}
+		// 设置网络信息
+		onlinePeers := p.GetOnlineParticipants()
+		outputProcessor.SetNetworkInfo(onlinePeers, p.ID)
+		// 设置协调器客户端
+		if p.CoordinatorClient != nil {
+			outputProcessor.SetCoordinatorClient(p.CoordinatorClient)
+		}
+		p.LayerProcessor = outputProcessor
+		// 初始化同步服务
+		p.SyncService = sync.NewSyncService(p.ID, p.PeerManager, p.Client.Client)
+	case "input_output_layer":
+		// 测试模式：使用输出层处理器（包含标签处理功能）
+		// 创建权重管理器（修复参数传递）
+		weightManager := NewWeightManager(p.DataPackingService.GetSlotCount(), p.DataPackingService.GetFeatureCount(), p.DataPackingService.GetParams(), p.DataPackingService.GetEncryptor())
+		weightManager.SetEncoder(p.DataPackingService.GetEncoder())
+
+		outputProcessor := output_layer.NewOutputLayerProcessor(p.DataPackingService, p.DataManager, p.ID, weightManager)
+		outputProcessor.SetParticipantInfo(p.PeerManager, p.MessageProcessor)
+		// 设置密钥管理器
+		outputProcessor.SetKeyManager(p.KeyManager)
+		// 设置刷新服务
+		if p.RefreshService != nil {
+			outputProcessor.SetRefreshService(p.RefreshService)
+		}
+		// 设置网络信息
+		onlinePeers := p.GetOnlineParticipants()
+		outputProcessor.SetNetworkInfo(onlinePeers, p.ID)
+		// 设置协调器客户端
+		if p.CoordinatorClient != nil {
+			outputProcessor.SetCoordinatorClient(p.CoordinatorClient)
+		}
+		p.LayerProcessor = outputProcessor
+		// 初始化同步服务
+		p.SyncService = sync.NewSyncService(p.ID, p.PeerManager, p.Client.Client)
+	default:
+		return fmt.Errorf("未知角色: %s", role)
+	}
+
+	// 使用层处理器处理数据
+	if err := p.LayerProcessor.ProcessData(images); err != nil {
+		return fmt.Errorf("层数据处理失败: %v", err)
+	}
+
+	// 根据角色执行特征收集/发送和标签收集/发送
+	switch role {
+	case "input_layer":
+		// Input Layer: 收集所有参与方的特征数据，发送标签数据给Output Layer，发送收集好的特征数据给Hidden Layer
+		if inputProcessor, ok := p.LayerProcessor.(interfaces.FeatureCollector); ok {
+			if err := inputProcessor.CollectAllFeatures(); err != nil {
+				return fmt.Errorf("特征收集失败: %v", err)
+			}
+			// 组织特征数据为神经网络输入格式
+			organizedFeatures := inputProcessor.OrganizeFeatures()
+			fmt.Printf("✓ 特征数据组织完成，准备开始神经网络计算\n")
+			fmt.Printf("  收集到的参与方: %d 个\n", len(organizedFeatures))
+		}
+
+		// 1. 先发送标签数据给Output Layer
+		fmt.Printf("  检查输入层处理器是否实现LabelSender接口...\n")
+		if inputProcessor, ok := p.LayerProcessor.(interfaces.LabelSender); ok {
+			fmt.Printf("  ✓ 类型断言成功，开始发送标签数据给输出层\n")
+			if err := inputProcessor.SendLabelsToOutputLayer(); err != nil {
+				return fmt.Errorf("标签发送失败: %v", err)
+			}
+		} else {
+			fmt.Printf("  ❌ 类型断言失败，LayerProcessor类型: %T\n", p.LayerProcessor)
+			fmt.Printf("  ❌ 输入层处理器未实现LabelSender接口\n")
+		}
+
+		// 2. 再发送收集好的特征数据给Hidden Layer
+		fmt.Printf("  开始发送收集好的特征数据给隐藏层...\n")
+		// 使用类型断言获取具体的输入层处理器
+		if concreteInputProcessor, ok := p.LayerProcessor.(*input_layer.InputLayerProcessor); ok {
+			if err := concreteInputProcessor.SendFeaturesToHiddenLayer(0, 2); err != nil { // 批次0，目标参与方2（隐藏层）
+				return fmt.Errorf("发送特征数据给隐藏层失败: %v", err)
+			}
+			fmt.Printf("✓ 特征数据发送给隐藏层完成\n")
+		} else {
+			return fmt.Errorf("无法获取具体的输入层处理器")
+		}
+	case "hidden_layer":
+		// Hidden Layer: 向输入层发送密文特征、输出层发送密文标签、等待接收输入层特征数据
+		fmt.Printf("  隐藏层开始发送特征和标签数据...\n")
+
+		// 1. 向输入层发送密文特征
+		if hiddenProcessor, ok := p.LayerProcessor.(interfaces.FeatureSender); ok {
+			if err := hiddenProcessor.SendFeaturesToInputLayer(); err != nil {
+				return fmt.Errorf("特征发送失败: %v", err)
+			}
+		}
+
+		// 2. 向输出层发送密文标签
+		if hiddenProcessor, ok := p.LayerProcessor.(interfaces.LabelSender); ok {
+			if err := hiddenProcessor.SendLabelsToOutputLayer(); err != nil {
+				return fmt.Errorf("标签发送失败: %v", err)
+			}
+		}
+
+		// 3. 等待接收输入层特征数据
+		fmt.Printf("  隐藏层等待接收输入层的特征数据...\n")
+		// 注意：隐藏层会通过MessageProcessor接收输入层发送的特征数据
+	case "output_layer":
+		// Output Layer: 发送特征数据给Input Layer，收集所有参与方的标签数据
+		fmt.Printf("  输出层开始发送特征数据...\n")
+
+		// 1. 发送特征数据给Input Layer
+		if outputProcessor, ok := p.LayerProcessor.(interfaces.FeatureSender); ok {
+			if err := outputProcessor.SendFeaturesToInputLayer(); err != nil {
+				return fmt.Errorf("特征发送失败: %v", err)
+			}
+		}
+
+		// 2. 收集所有参与方的标签数据
+		if outputProcessor, ok := p.LayerProcessor.(interfaces.LabelCollector); ok {
+			if err := outputProcessor.CollectAllLabels(); err != nil {
+				return fmt.Errorf("标签收集失败: %v", err)
+			}
+			// 组织标签数据为损失计算格式
+			organizedLabels := outputProcessor.OrganizeLabels()
+			fmt.Printf("✓ 标签数据组织完成，准备开始损失计算\n")
+			fmt.Printf("  收集到的参与方: %d 个\n", len(organizedLabels))
+		}
+	case "input_output_layer":
+		// 测试模式：同时测试特征发送和标签收集
+		labels := p.DataManager.GetLabels()
+		if len(labels) > 0 {
+			// 使用类型断言获取输出层处理器
+			if outputProcessor, ok := p.LayerProcessor.(*output_layer.OutputLayerProcessor); ok {
+				if err := outputProcessor.ProcessLabelData(labels); err != nil {
+					return fmt.Errorf("标签数据处理失败: %v", err)
+				}
+				if err := outputProcessor.VerifyEncryptionCorrectness(images, labels); err != nil {
+					return fmt.Errorf("加密正确性验证失败: %v", err)
+				}
+			}
+		}
+		// 发送特征数据（模拟Input Layer）
+		if outputProcessor, ok := p.LayerProcessor.(interfaces.FeatureSender); ok {
+			if err := outputProcessor.SendFeaturesToInputLayer(); err != nil {
+				return fmt.Errorf("特征发送失败: %v", err)
+			}
+		}
+		// 收集标签数据（模拟Output Layer）
+		if outputProcessor, ok := p.LayerProcessor.(interfaces.LabelCollector); ok {
+			if err := outputProcessor.CollectAllLabels(); err != nil {
+				return fmt.Errorf("标签收集失败: %v", err)
+			}
+			organizedLabels := outputProcessor.OrganizeLabels()
+			fmt.Printf("✓ 测试模式：标签数据组织完成，共 %d 个参与方\n", len(organizedLabels))
+		}
+	}
+
+	return nil
 }

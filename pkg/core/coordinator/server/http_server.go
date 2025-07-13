@@ -26,7 +26,11 @@ func NewHTTPServer(port string) *HTTPServer {
 		localIP = "未知"
 	}
 
-	router := gin.Default()
+	// 使用gin.New()而不是gin.Default()，避免默认中间件冲突
+	router := gin.New()
+	// 添加Recovery中间件（gin.Default()包含的中间件）
+	router.Use(gin.Recovery())
+
 	return &HTTPServer{
 		Router:  router,
 		Port:    port,

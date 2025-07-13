@@ -2,35 +2,15 @@ package utils
 
 import (
 	"bytes"
-	"fmt"
 	"net"
 	"strings"
 )
 
-// GetLocalIP 获取本机IP地址，优先使用Radmin VPN接口
+// GetLocalIP 获取本机IP地址，优先使用本地IP
 func GetLocalIP() (string, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return "", err
-	}
-
-	// 优先查找Radmin VPN接口
-	for _, iface := range interfaces {
-		if strings.Contains(strings.ToLower(iface.Name), "radmin") {
-			addrs, err := iface.Addrs()
-			if err != nil {
-				continue
-			}
-
-			for _, addr := range addrs {
-				if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-					if ipnet.IP.To4() != nil {
-						// 返回Radmin VPN接口的IP地址
-						return ipnet.IP.String(), nil
-					}
-				}
-			}
-		}
 	}
 
 	// 优先选择的接口名称（按优先级排序）
@@ -99,7 +79,8 @@ func GetLocalIP() (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("未找到有效的IP地址")
+	// 如果都找不到，返回本地回环地址
+	return "127.0.0.1", nil
 }
 
 // isPrivateIP 检查是否是私有IP地址

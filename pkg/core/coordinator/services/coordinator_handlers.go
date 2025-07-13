@@ -2,10 +2,13 @@ package services
 
 import (
 	"MPHEDev/pkg/core/coordinator/utils"
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
 	"strconv"
 	"time"
 
@@ -18,6 +21,7 @@ type KeysResponse struct {
 	PubKey     string            `json:"pub_key"`
 	RelineKey  string            `json:"reline_key"`
 	GaloisKeys map[string]string `json:"galois_keys"`
+	SecretKey  string            `json:"secret_key"` // 新增：协同私钥（仅测试模式）
 }
 
 // CoordinatorStartResponse is the response structure for /api/coordinator/init
@@ -344,11 +348,17 @@ func (c *Coordinator) getDetailedStatusHandler(ctx *gin.Context) {
 	// 获取在线参与方列表
 	onlineParticipants := c.GetOnlineParticipants()
 
+	// 添加调试信息
+	fmt.Printf("协调器状态调试信息:\n")
+	fmt.Printf("  期望参与方数量 (expectedN): %d\n", c.expectedN)
+	fmt.Printf("  当前已注册参与方数量: %d\n", len(participants))
+	fmt.Printf("  当前在线参与方数量: %d\n", len(onlineParticipants))
+
 	// 构造详细状态响应
 	detailedStatus := gin.H{
 		"coordinator_ip":           c.GetLocalIP(),
 		"port":                     8080,
-		"total_participants":       len(participants),
+		"total_participants":       c.expectedN, // 使用期望的参与方数量，而不是当前已注册的数量
 		"online_participants":      len(onlineParticipants),
 		"online_percentage":        onlineStatus["online_percentage"],
 		"min_participants":         onlineStatus["min_participants"],
@@ -358,6 +368,8 @@ func (c *Coordinator) getDetailedStatusHandler(ctx *gin.Context) {
 		"participants":             participants,
 		"online_participants_list": onlineParticipants,
 	}
+
+	fmt.Printf("  返回给参与方的 total_participants: %d\n", detailedStatus["total_participants"])
 
 	ctx.JSON(http.StatusOK, detailedStatus)
 }
@@ -438,6 +450,20 @@ func (c *Coordinator) getAggregatedKeysHandler(ctx *gin.Context) {
 	}
 	relineKeyB64 := utils.EncodeToBase64(relineKeyBytes)
 
+	// 序列化协同私钥（仅测试模式）
+	var secretKeyB64 string
+	if c.KeyManager.GetAggregatedSecretKey() != nil {
+		secretKeyBytes, err := utils.EncodeShare(c.KeyManager.GetAggregatedSecretKey())
+		if err != nil {
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "协同私钥序列化失败"})
+			return
+		}
+		secretKeyB64 = utils.EncodeToBase64(secretKeyBytes)
+		fmt.Println("✓ 协同私钥已序列化，准备分发（测试模式）")
+	} else {
+		fmt.Println("⚠️  协同私钥为空，跳过私钥分发")
+	}
+
 	// 序列化伽罗瓦密钥
 	galoisKeysMap := make(map[string]string)
 	for i, galEl := range galEls {
@@ -455,6 +481,7 @@ func (c *Coordinator) getAggregatedKeysHandler(ctx *gin.Context) {
 		PubKey:     pubKeyB64,
 		RelineKey:  relineKeyB64,
 		GaloisKeys: galoisKeysMap,
+		SecretKey:  secretKeyB64, // 新增：协同私钥
 	}
 
 	fmt.Printf("密钥响应构造完成，发送给 %s\n", ctx.ClientIP())
@@ -713,4 +740,156 @@ func rlkStatusText(round1, round2, ready bool) string {
 		return "round2 done"
 	}
 	return "in progress"
+}
+
+// computationDoneHandler 处理计算完成消息
+func (c *Coordinator) computationDoneHandler(ctx *gin.Context) {
+	var req struct {
+		ParticipantID int    `json:"participant_id"`
+		BatchID       int    `json:"batch_id"`
+		Status        string `json:"status"`
+		Timestamp     int64  `json:"timestamp"`
+	}
+
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid request format"})
+		return
+	}
+
+	fmt.Printf("收到计算完成消息: 参与方=%d, 批次=%d, 状态=%s, 时间=%d\n",
+		req.ParticipantID, req.BatchID, req.Status, req.Timestamp)
+
+	// 调用ctCNN EXE
+	go c.callCtCNN()
+
+	// 立即返回成功响应
+	ctx.JSON(http.StatusOK, gin.H{
+		"status":         "received",
+		"message":        "计算完成消息已接收，正在调用算法模块",
+		"participant_id": req.ParticipantID,
+		"batch_id":       req.BatchID,
+	})
+}
+
+// CtCNNOutput 输出消息结构
+type CtCNNOutput struct {
+	Type      string `json:"type"`      // "output" 或 "error"
+	Content   string `json:"content"`   // 输出内容
+	Timestamp int64  `json:"timestamp"` // 时间戳
+}
+
+// 分发输出到参与方
+func (c *Coordinator) distributeOutput(outputType, content string) {
+	// 获取在线参与方
+	onlineParticipants := c.GetOnlineParticipants()
+	if len(onlineParticipants) == 0 {
+		return
+	}
+
+	// 构建输出消息
+	output := CtCNNOutput{
+		Type:      outputType,
+		Content:   content,
+		Timestamp: time.Now().Unix(),
+	}
+
+	// 序列化消息
+	jsonData, err := json.Marshal(output)
+	if err != nil {
+		fmt.Printf("❌ 序列化输出消息失败: %v\n", err)
+		return
+	}
+
+	// 发送给所有在线参与方
+	for _, participant := range onlineParticipants {
+		go func(url string) {
+			// 发送到参与方的输出接收接口
+			resp, err := http.Post(url+"/ctcnn/output", "application/json", bytes.NewReader(jsonData))
+			if err != nil {
+				fmt.Printf("❌ 发送输出到参与方失败 %s: %v\n", url, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				fmt.Printf("⚠️ 参与方 %s 返回状态码: %d\n", url, resp.StatusCode)
+			}
+		}(participant.URL)
+	}
+}
+
+// callCtCNN 调用ctCNN EXE
+func (c *Coordinator) callCtCNN() {
+	fmt.Printf("🔄 开始调用ctCNN EXE...\n")
+
+	// 动态开启心跳日志静默模式
+	SetHeartbeatSilentMode(true)
+	fmt.Printf("📝 已开启心跳日志静默模式\n")
+
+	// 构建ctCNN EXE的路径 - 修正相对路径
+	exePath := "../ctCNN/ctCNN.exe"
+
+	// 创建命令
+	cmd := exec.Command(exePath)
+
+	// 设置工作目录
+	cmd.Dir = "."
+
+	// 创建管道来捕获输出
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Printf("❌ 创建stdout管道失败: %v\n", err)
+		return
+	}
+
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		fmt.Printf("❌ 创建stderr管道失败: %v\n", err)
+		return
+	}
+
+	// 启动命令
+	fmt.Printf("执行命令: %s (工作目录: %s)\n", exePath, cmd.Dir)
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("❌ 启动ctCNN失败: %v\n", err)
+		return
+	}
+
+	// 实时读取并分发stdout
+	go func() {
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Println(line)                  // 本地显示
+			c.distributeOutput("output", line) // 分发给参与方
+		}
+	}()
+
+	// 实时读取并分发stderr
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Fprintf(os.Stderr, "%s\n", line) // 本地显示
+			c.distributeOutput("error", line)    // 分发给参与方
+		}
+	}()
+
+	// 等待命令完成
+	err = cmd.Wait()
+
+	// 动态关闭心跳日志静默模式
+	SetHeartbeatSilentMode(false)
+	fmt.Printf("📝 已关闭心跳日志静默模式\n")
+
+	if err != nil {
+		fmt.Printf("❌ ctCNN执行失败: %v\n", err)
+		c.distributeOutput("error", fmt.Sprintf("ctCNN执行失败: %v", err))
+	} else {
+		fmt.Printf("✅ ctCNN执行成功\n")
+		c.distributeOutput("output", "✅ ctCNN执行成功")
+
+		// TODO: 这里可以解析输出信息并分发给各参与方
+		// 暂时只是打印输出
+	}
 }

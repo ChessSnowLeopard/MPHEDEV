@@ -1,21 +1,29 @@
 {
-  "num_splits": 2,
+  "num_splits": 3,
   "format": "csv",
   "splits_info": [
     {
       "split_id": "train_split_000",
       "num_samples": 60000,
-      "num_features": 392,
+      "num_features": 261,
       "image_shape": [
-        392
+        261
       ]
     },
     {
       "split_id": "train_split_001",
       "num_samples": 60000,
-      "num_features": 392,
+      "num_features": 261,
       "image_shape": [
-        392
+        261
+      ]
+    },
+    {
+      "split_id": "train_split_002",
+      "num_samples": 60000,
+      "num_features": 262,
+      "image_shape": [
+        262
       ]
     }
   ]

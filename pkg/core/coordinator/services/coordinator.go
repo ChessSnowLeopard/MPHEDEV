@@ -7,9 +7,64 @@ import (
 	"MPHEDev/pkg/core/coordinator/server"
 	"MPHEDev/pkg/core/coordinator/utils"
 	"fmt"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 )
+
+// 颜色常量
+const (
+	green   = "\033[97;42m"
+	white   = "\033[90;47m"
+	yellow  = "\033[90;43m"
+	red     = "\033[97;41m"
+	blue    = "\033[97;44m"
+	magenta = "\033[97;45m"
+	cyan    = "\033[97;46m"
+	reset   = "\033[0m"
+)
+
+// 全局变量控制心跳日志静默
+var (
+	heartbeatSilentMode = false
+	heartbeatMutex      sync.RWMutex
+)
+
+// 获取状态码对应的颜色
+func statusColor(code int) string {
+	switch {
+	case code >= 200 && code < 300:
+		return green
+	case code >= 300 && code < 400:
+		return white
+	case code >= 400 && code < 500:
+		return yellow
+	default:
+		return red
+	}
+}
+
+// 获取方法对应的颜色
+func methodColor(method string) string {
+	switch method {
+	case "GET":
+		return blue
+	case "POST":
+		return cyan
+	case "PUT":
+		return yellow
+	case "DELETE":
+		return red
+	case "PATCH":
+		return green
+	case "HEAD":
+		return magenta
+	case "OPTIONS":
+		return white
+	default:
+		return reset
+	}
+}
 
 // Coordinator 重构后的协调器主结构体
 type Coordinator struct {
@@ -33,6 +88,20 @@ type Coordinator struct {
 
 	// 状态管理
 	expectedN int
+}
+
+// 设置心跳静默模式
+func SetHeartbeatSilentMode(silent bool) {
+	heartbeatMutex.Lock()
+	defer heartbeatMutex.Unlock()
+	heartbeatSilentMode = silent
+}
+
+// 获取心跳静默模式
+func GetHeartbeatSilentMode() bool {
+	heartbeatMutex.RLock()
+	defer heartbeatMutex.RUnlock()
+	return heartbeatSilentMode
 }
 
 // NewCoordinator 创建新的协调器实例
@@ -78,6 +147,32 @@ func NewCoordinator(expectedN int, dataSplitType string) (*Coordinator, error) {
 func (c *Coordinator) setupRoutes() {
 	router := c.HTTPServer.GetRouter()
 
+	// 创建条件日志中间件，根据路径决定是否输出日志
+	conditionalLogger := func() gin.HandlerFunc {
+		return gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+			// 心跳相关路径在静默模式下不输出日志
+			if GetHeartbeatSilentMode() && (param.Path == "/heartbeat" || param.Path == "/participants/online") {
+				return ""
+			}
+			// 其他路径正常输出带颜色的日志
+			statusColor := statusColor(param.StatusCode)
+			methodColor := methodColor(param.Method)
+
+			return fmt.Sprintf("[GIN] %v | %s%3d%s | %13v | %15s | %s%-7s%s %s\n%s",
+				param.TimeStamp.Format("2006/01/02 - 15:04:05"),
+				statusColor, param.StatusCode, reset,
+				param.Latency,
+				param.ClientIP,
+				methodColor, param.Method, reset,
+				param.Path,
+				param.ErrorMessage,
+			)
+		})
+	}
+
+	// 移除默认的日志中间件，使用条件日志中间件
+	router.Use(conditionalLogger())
+
 	// 注册路由处理器
 	router.POST("/register", c.registerHandler)
 	router.GET("/params/ckks", c.getCKKSParamsHandler)
@@ -94,9 +189,11 @@ func (c *Coordinator) setupRoutes() {
 	router.POST("/participants/url", c.reportURLHandler)
 	router.GET("/participants/list", c.getParticipantsListHandler)
 
-	// 在线状态管理路由
+	// 心跳路由（使用条件日志中间件控制）
 	router.POST("/heartbeat", c.heartbeatHandler)
 	router.GET("/participants/online", c.getOnlineParticipantsHandler)
+
+	// 其他在线状态管理路由
 	router.GET("/status/online", c.getOnlineStatusHandler)
 	router.GET("/status", c.getDetailedStatusHandler)
 
@@ -108,6 +205,9 @@ func (c *Coordinator) setupRoutes() {
 
 	// 重线性化密钥状态查询路由
 	router.GET("/keys/relin/status", c.getRelinearizationKeyStatusHandler)
+
+	// 计算完成消息路由
+	router.POST("/computation/done", c.computationDoneHandler)
 
 	router.POST("/unregister", c.unregisterHandler)
 }

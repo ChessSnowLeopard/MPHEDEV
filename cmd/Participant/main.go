@@ -26,14 +26,7 @@ func getUserInput(prompt string) string {
 	return strings.TrimSpace(input)
 }
 
-// ParticipantIPPush WebSocket 消息结构体
-// type ParticipantIPPush struct {
-//     Type string `json:"type"`
-//     IP   string `json:"ip"`
-//     Port int    `json:"port"`
-// }
-
-// KeyGenProgressPush 结构体
+// KeyGenProgressPush 密钥生成进度结构体
 // 用于 /api/participant/step 接口
 type KeyGenProgressPush struct {
 	Type      string `json:"type"`
@@ -63,16 +56,7 @@ func getKeyGenProgress() KeyGenProgressPush {
 	return keyGenProgress
 }
 
-// ParticipantSelfStatusResponse 结构体
-//
-//	type ParticipantSelfStatusResponse struct {
-//	    ID          int               `json:"id"`
-//	    IP          string            `json:"ip"`
-//	    Port        int               `json:"port"`
-//	    Status      string            `json:"status"`
-//	    DataSplit   string            `json:"data_split"`
-//	    Participants map[int]string   `json:"participants"`
-//	}
+// ParticipantSelfStatusResponse 参与方自身状态响应
 type ParticipantSelfStatusResponse struct {
 	ID           int            `json:"id"`
 	IP           string         `json:"ip"`
@@ -82,31 +66,15 @@ type ParticipantSelfStatusResponse struct {
 	Participants map[int]string `json:"participants"`
 }
 
-// OnlineStatusParticipant 和 ParticipantOnlineStatusResponse 结构体
-//
-//	type OnlineStatusParticipant struct {
-//	    ID            int    `json:"id"`
-//	    URL           string `json:"url"`
-//	    LastHeartbeat string `json:"last_heartbeat"`
-//	    Status        string `json:"status"`
-//	}
-//
-//	type ParticipantOnlineStatusResponse struct {
-//	    OnlineCount        int                       `json:"online_count"`
-//	    TotalCount         int                       `json:"total_count"`
-//	    OnlinePercentage   float64                   `json:"online_percentage"`
-//	    MinParticipants    int                       `json:"min_participants"`
-//	    CanProceed         bool                      `json:"can_proceed"`
-//	    OnlineTimeout      float64                   `json:"online_timeout"`
-//	    HeartbeatInterval  float64                   `json:"heartbeat_interval"`
-//	    Participants       []OnlineStatusParticipant `json:"participants"`
-//	}
+// OnlineStatusParticipant 在线参与方信息
 type OnlineStatusParticipant struct {
 	ID            int    `json:"id"`
 	URL           string `json:"url"`
 	LastHeartbeat string `json:"last_heartbeat"`
 	Status        string `json:"status"`
 }
+
+// ParticipantOnlineStatusResponse 参与方在线状态响应
 type ParticipantOnlineStatusResponse struct {
 	OnlineCount       int                       `json:"online_count"`
 	TotalCount        int                       `json:"total_count"`
@@ -118,7 +86,7 @@ type ParticipantOnlineStatusResponse struct {
 	Participants      []OnlineStatusParticipant `json:"participants"`
 }
 
-func startIPPushServer(ip string, port int, participant *services.Participant) {
+func startIPPushServer(ip string, backendPort int, participant *services.Participant) {
 	r := gin.Default()
 	r.GET("/api/participant/ws", func(c *gin.Context) {
 		msg := struct {
@@ -128,7 +96,7 @@ func startIPPushServer(ip string, port int, participant *services.Participant) {
 		}{
 			Type: "ip",
 			IP:   ip,
-			Port: port,
+			Port: backendPort,
 		}
 		c.JSON(200, msg)
 	})
@@ -140,7 +108,7 @@ func startIPPushServer(ip string, port int, participant *services.Participant) {
 		}{
 			Type: "ip",
 			IP:   ip,
-			Port: port,
+			Port: backendPort,
 		}
 		c.JSON(200, msg)
 	})
@@ -153,9 +121,9 @@ func startIPPushServer(ip string, port int, participant *services.Participant) {
 		resp := ParticipantSelfStatusResponse{
 			ID:           participant.ID,
 			IP:           ip,
-			Port:         port,
+			Port:         backendPort,
 			Status:       "online",
-			DataSplit:    participant.DataSplit,
+			DataSplit:    participant.DataManager.GetDataSplit(),
 			Participants: participant.GetOnlineParticipants(),
 		}
 		c.JSON(200, resp)
@@ -192,10 +160,25 @@ func startIPPushServer(ip string, port int, participant *services.Participant) {
 		resp.Participants = participants
 		c.JSON(200, resp)
 	})
-	addr := ":8061"
+
+	// 动态分配前端端口：参与方1使用8061，参与方2使用8062，以此类推
+	// 避免与协调器前端端口8060冲突
+	var frontendPort int
+	if participant.ID <= 0 {
+		// 如果还未注册，使用临时端口8061
+		frontendPort = 8061
+	} else {
+		// 注册后，使用8061 + (ID-1) = 8061, 8062, 8063...
+		frontendPort = 8061 + (participant.ID - 1)
+	}
+
+	addr := fmt.Sprintf(":%d", frontendPort)
+	fmt.Printf("前端服务启动在端口: %d (参与方ID: %d)\n", frontendPort, participant.ID)
+
 	go func() {
 		if err := r.Run(addr); err != nil {
-			panic(err)
+			fmt.Printf("前端服务启动失败: %v\n", err)
+			// 不panic，让程序继续运行
 		}
 	}()
 }
@@ -213,9 +196,6 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("本机IP: %s\n", localIP)
-
-	// 启动 WebSocket 服务（8061端口）
-	startIPPushServer(localIP, 8061, participant)
 
 	// 获取协调器IP
 	coordinatorIP := getUserInput("请输入协调器IP地址: ")
@@ -250,6 +230,10 @@ func main() {
 		break
 	}
 	setKeyGenProgress("register", "success", "注册成功")
+
+	// 重新启动前端服务，使用正确的后端端口
+	fmt.Printf("重新启动前端服务，参与方ID: %d, 后端端口: %d\n", participant.ID, participant.Port)
+	startIPPushServer(localIP, participant.Port, participant)
 
 	// 设置参与方ID到客户端
 	participant.CoordinatorClient.SetParticipantID(participant.ID)
@@ -366,12 +350,18 @@ func main() {
 	setKeyGenProgress("upload_public_key_share", "success", "上传公钥份额成功")
 
 	// 6. 生成并上传伽罗瓦密钥份额
+	fmt.Println("开始生成伽罗瓦密钥份额...")
 	galoisShares, err := keyGen.GenerateGaloisKeyShares()
 	if err != nil {
 		panic(err)
 	}
 
+	fmt.Printf("开始上传伽罗瓦密钥份额 (共 %d 个)...\n", len(galoisShares))
+	shareCount := 0
 	for galEl, share := range galoisShares {
+		shareCount++
+		fmt.Printf("正在上传第 %d/%d 个伽罗瓦密钥份额 (GalEl: %d)...\n", shareCount, len(galoisShares), galEl)
+
 		shareB64, err := keyGen.EncodeGaloisKeyShare(share)
 		if err != nil {
 			panic(err)
@@ -379,7 +369,9 @@ func main() {
 		if err := participant.CoordinatorClient.UploadGaloisKeyShare(galEl, shareB64); err != nil {
 			panic(err)
 		}
+		fmt.Printf("第 %d/%d 个伽罗瓦密钥份额上传完成\n", shareCount, len(galoisShares))
 	}
+	fmt.Println("所有伽罗瓦密钥份额上传完成")
 
 	// 7. 生成并上传重线性化密钥第一轮份额
 	if err := keyGen.GenerateRelinearizationKeyRound1(); err != nil {
@@ -446,7 +438,6 @@ func main() {
 		fmt.Printf("获取聚合密钥失败: %v\n", err)
 		panic(err)
 	}
-	fmt.Println("成功获取聚合密钥")
 
 	// 解码并设置公钥
 	fmt.Println("开始解码并设置公钥...")
@@ -491,7 +482,41 @@ func main() {
 	participant.KeyManager.SetGaloisKeys(galoisKeys)
 	fmt.Println("所有伽罗瓦密钥设置完成")
 
-	// 12. 获取在线成员列表
+	// 解码并设置协同私钥（仅测试模式）
+	if keys.SecretKey != "" {
+		fmt.Println("开始解码并设置协同私钥（测试模式）...")
+		secretKeyBytes, err := utils.DecodeFromBase64(keys.SecretKey)
+		if err != nil {
+			panic(err)
+		}
+		var secretKey rlwe.SecretKey
+		if err := utils.DecodeShare(secretKeyBytes, &secretKey); err != nil {
+			panic(err)
+		}
+		participant.KeyManager.SetAggregatedSecretKey(&secretKey)
+		fmt.Println("✓ 协同私钥设置完成（测试模式）")
+	} else {
+		fmt.Println("⚠️  没有协同私钥，跳过私钥设置")
+		participant.KeyManager.SetAggregatedSecretKey(nil)
+	}
+
+	// 初始化评估器和编码器（在密钥设置完成后）
+	fmt.Println("开始初始化评估器和编码器...")
+	evk := rlwe.NewMemEvaluationKeySet(participant.KeyManager.GetRelinearizationKey(), participant.KeyManager.GetGaloisKeys()...)
+	evaluator := ckks.NewEvaluator(ckksParams, evk)
+	encoder := ckks.NewEncoder(ckksParams)
+	participant.KeyManager.SetEvaluator(evaluator)
+	participant.KeyManager.SetEncoder(encoder)
+	fmt.Println("评估器和编码器初始化完成")
+
+	// 12. 更新数据打包服务，启用加密功能
+	fmt.Println("开始更新数据打包服务，启用加密功能...")
+	if err := participant.UpdateDataPackingServiceWithKeys(); err != nil {
+		fmt.Printf("更新数据打包服务失败: %v\n", err)
+		panic(err)
+	}
+
+	// 13. 获取在线成员列表
 	fmt.Printf("参与方 %d 收集密钥并解码设置，启动成功，开始检查在线状态...\n", participant.ID)
 	if err := participant.CheckOnlineStatusBeforeOperation(); err != nil {
 		fmt.Printf("在线状态检查失败: %v\n", err)
@@ -502,20 +527,26 @@ func main() {
 		panic(err)
 	}
 
-	// 13. 载入数据集
+	// 14. 角色判定
+	fmt.Printf("参与方 %d 开始角色判定...\n", participant.ID)
+	if err := participant.DetermineRole(); err != nil {
+		fmt.Printf("角色判定失败: %v\n", err)
+		panic(err)
+	}
+
+	// 15. 载入数据集
 	if err := participant.LoadDataset(); err != nil {
 		panic(err)
 	}
 
-	// 14. 加密并分发数据集
-	if err := participant.EncryptAndDistributeDataset(); err != nil {
+	// 16. 根据角色处理数据集重排打包加密
+	fmt.Printf("参与方 %d 开始处理数据集重排打包加密...\n", participant.ID)
+	if err := participant.ProcessDatasetWithPacking(); err != nil {
+		fmt.Printf("数据集处理失败: %v\n", err)
 		panic(err)
 	}
 
-	// 15. 等待数据分发完成
-	<-participant.ReadyCh
-
-	// 16. 运行主循环
+	// 17. 运行主循环
 	participant.RunMainLoop()
 }
 
