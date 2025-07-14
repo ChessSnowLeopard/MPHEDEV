@@ -1,0 +1,214 @@
+{
+  "system_config": {
+    "batch_size": 64,
+    "image_features": 784,
+    "images_per_vector": 64,
+    "k": 128,
+    "num_vectors": 7,
+    "slots": 8192
+  },
+  "layer_structures": [
+    {
+      "layer_type": "input_layer",
+      "input_format": {
+        "batch_size": 64,
+        "data_type": "raw_images",
+        "example_vector": {
+          "first_10_values": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "packing_pattern": "feature_0_sample_0, feature_0_sample_1, ..., feature_1_sample_0, feature_1_sample_1, ...",
+          "vector_index": 0,
+          "vector_size": 8192
+        },
+        "format": "byte_arrays",
+        "image_features": 784,
+        "normalization": "divide_by_255"
+      },
+      "output_format": {
+        "data_type": "encrypted_vectors",
+        "description": "每个向量包含k个特征，每个特征包含n个样本的值",
+        "encrypted_structure": {
+          "example_keys": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "key_mapping": "vector_index -\u003e encrypted_ciphertext",
+          "key_type": "uint64",
+          "total_vectors": 7,
+          "value_type": "*rlwe.Ciphertext"
+        },
+        "format": "map[uint64]*rlwe.Ciphertext",
+        "num_vectors": 7,
+        "packing_format": "interleaved_features",
+        "vector_size": 8192
+      },
+      "parameters": {
+        "image_features": 784,
+        "k": 128,
+        "n": 64,
+        "num_vectors": 7,
+        "s": 8192
+      },
+      "description": "输入层负责将原始图像数据重排打包并加密，为后续层提供标准化的密文输入格式",
+      "timestamp": "2025-07-11 08:53:22"
+    },
+    {
+      "layer_type": "hidden_layer",
+      "input_format": {
+        "data_type": "encrypted_vectors",
+        "description": "来自上一层的重组后密文向量",
+        "format": "map[uint64]*rlwe.Ciphertext",
+        "reorganization": "mask_based_reorganization"
+      },
+      "output_format": {
+        "data_type": "neuron_outputs",
+        "description": "每个神经元的输出包含所有样本的激活值",
+        "format": "[]*rlwe.Ciphertext",
+        "num_neurons": 128,
+        "output_format": "each_neuron_contains_all_samples",
+        "reorganization": {
+          "input_format": "neuron_outputs",
+          "mask_generation": "segment_based_masking",
+          "mask_pattern": "每个掩码提取一个神经元段，然后重新组合",
+          "method": "mask_based",
+          "num_output_vectors": 1,
+          "output_format": "reorganized_vectors"
+        }
+      },
+      "parameters": {
+        "activation": "ReLU",
+        "computation_steps": [
+          "1. 权重打包：将权重矩阵按神经元和特征维度打包",
+          "2. 密文乘法：输入向量与打包权重相乘",
+          "3. 旋转累加：使用log2(k)次旋转实现特征累加",
+          "4. 偏置添加：添加偏置项到结果",
+          "5. 激活函数：应用ReLU激活函数",
+          "6. 输出重组：使用掩码重组输出格式"
+        ],
+        "hidden_size": 128,
+        "input_size": 784,
+        "k": 128,
+        "n": 64
+      },
+      "description": "隐藏层执行全连接计算和激活函数，输出需要重组以便传递给下一层",
+      "timestamp": "2025-07-11 08:53:22"
+    },
+    {
+      "layer_type": "output_layer",
+      "input_format": {
+        "data_type": "reorganized_vectors",
+        "description": "来自隐藏层的重组后密文向量",
+        "format": "[]*rlwe.Ciphertext"
+      },
+      "output_format": {
+        "data_type": "raw_outputs",
+        "description": "输出层的原始logits，需要经过softmax处理",
+        "format": "[]*rlwe.Ciphertext",
+        "loss_computation": {
+          "aggregation": "batch_average_loss",
+          "efficiency_gain": "38x_improvement",
+          "label_format": "one_hot_encoded",
+          "label_packing": "class_based_packing",
+          "loss_type": "cross_entropy"
+        },
+        "num_classes": 10,
+        "output_format": "logits_before_softmax",
+        "softmax": {
+          "computation_steps": [
+            "1. 指数计算：对每个logit计算e^x",
+            "2. 求和：计算所有指数的和",
+            "3. 除法：每个指数除以总和",
+            "4. 损失计算：计算交叉熵损失"
+          ],
+          "input": "raw_logits",
+          "loss_function": "cross_entropy",
+          "method": "homomorphic_softmax",
+          "output": "probability_distribution"
+        }
+      },
+      "parameters": {
+        "activation": "Identity",
+        "input_size": 128,
+        "next_step": "softmax_activation",
+        "output_size": 10
+      },
+      "description": "输出层产生最终的logits，然后通过softmax转换为概率分布",
+      "timestamp": "2025-07-11 08:53:22"
+    }
+  ],
+  "data_flow": {
+    "communication_patterns": {
+      "hidden_to_output": "reorganized_forward",
+      "input_to_hidden": "direct_forward",
+      "reorganization": "mask_based_segmentation"
+    },
+    "data_formats": {
+      "input_format": {
+        "encrypted": "rlwe_ciphertexts",
+        "normalized": "float32_arrays",
+        "packed": "interleaved_vectors",
+        "raw_data": "byte_arrays"
+      },
+      "intermediate_format": {
+        "activation": "applied_in_place",
+        "neuron_outputs": "[]*rlwe.Ciphertext",
+        "reorganized": "[]*rlwe.Ciphertext"
+      },
+      "output_format": {
+        "logits": "[]*rlwe.Ciphertext",
+        "loss": "single_ciphertext",
+        "softmax": "[]*rlwe.Ciphertext"
+      }
+    },
+    "key_parameters": {
+      "batch_size": 64,
+      "k": 128,
+      "n": 64,
+      "num_vectors": 7,
+      "s": 8192
+    },
+    "layer_transitions": [
+      {
+        "data_format": "map[uint64]*rlwe.Ciphertext",
+        "description": "输入层直接加密原始数据，无需重组",
+        "from": "input_layer",
+        "to": "hidden_layer",
+        "transformation": "raw_encryption"
+      },
+      {
+        "data_format": "[]*rlwe.Ciphertext",
+        "description": "隐藏层输出需要重组以便输出层处理",
+        "from": "hidden_layer",
+        "to": "output_layer",
+        "transformation": "mask_reorganization"
+      }
+    ],
+    "overview": {
+      "data_flow": "input_layer -\u003e hidden_layer -\u003e output_layer",
+      "encryption": "ckks_homomorphic_encryption",
+      "packing": "vector_interleaving",
+      "total_layers": 3
+    }
+  }
+}
