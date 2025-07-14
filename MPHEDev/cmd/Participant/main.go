@@ -39,6 +39,8 @@ type KeyGenProgressPush struct {
 var (
 	keyGenProgress     = KeyGenProgressPush{Type: "keygen_progress"}
 	keyGenProgressLock sync.RWMutex
+	coordinatorIP      string
+	coordinatorIPChan  = make(chan string)
 )
 
 func setKeyGenProgress(step, status, message string) {
@@ -163,7 +165,27 @@ func startIPPushServer(ip string, backendPort int, participant *services.Partici
 		resp.Participants = participants
 		c.JSON(200, resp)
 	})
+	r.POST("/api/participant/set-coordinator-ip", func(c *gin.Context) {
 
+		var req struct {
+			CoordinatorIP string `json:"coordinator_ip"`
+		}
+
+		if err := c.ShouldBindJSON(&req); err != nil || req.CoordinatorIP == "" {
+
+			c.JSON(400, gin.H{"error": "Invalid coordinator_ip"})
+
+			return
+
+		}
+
+		coordinatorIP = req.CoordinatorIP
+
+		go func() { coordinatorIPChan <- coordinatorIP }()
+
+		c.JSON(200, gin.H{"status": "ok"})
+
+	})
 	// 动态分配前端端口：参与方1使用8061，参与方2使用8062，以此类推
 	// 避免与协调器前端端口8060冲突
 	var frontendPort int

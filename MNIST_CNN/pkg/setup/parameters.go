@@ -29,7 +29,8 @@ func InitParameters() (ckks.Parameters, error) {
 	return ckks.NewParametersFromLiteral(
 		ckks.ParametersLiteral{
 			LogN:            14,
-			LogQ:            []int{55, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45},
+			//LogQ:            []int{55, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45},
+			LogQ:            []int{55, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45},
 			LogP:            []int{61, 61, 61},
 			LogDefaultScale: 45,
 			Xs:              ring.Ternary{H: 192},

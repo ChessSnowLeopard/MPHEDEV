@@ -81,6 +81,9 @@ type CoordinatorStatusResponse struct {
 	DataSplitType          string              `json:"data_split_type"`
 	Status                 string              `json:"status"`
 	Participants           []ParticipantStatus `json:"participants"`
+	CoordinatorIP          string              `json:"coordinator_ip"`
+	CoordinatorPort        string              `json:"coordinator_port"`
+	StartTime              string              `json:"start_time"`
 }
 
 // KeyProgress struct for GET /api/coordinator/key-progress
@@ -552,7 +555,9 @@ type InitRequest struct {
 }
 
 var (
-	globalCoordinator *Coordinator
+	globalCoordinator    *Coordinator
+	coordinatorStartTime string
+	port                 = 8080
 )
 
 // InitHandler 初始化协调器
@@ -578,8 +583,8 @@ func InitHandler(ctx *gin.Context) {
 
 	coordinatorID := uuid.New().String()
 	startTime := time.Now().Format(time.RFC3339)
+	coordinatorStartTime = startTime
 	ip := globalCoordinator.GetLocalIP()
-	port := 8080 // 默认端口
 	resp := CoordinatorStartResponse{
 		Success:              true,
 		Message:              "Coordinator initialized successfully",
@@ -659,6 +664,9 @@ func (c *Coordinator) getCoordinatorStatusHandler(ctx *gin.Context) {
 		DataSplitType:          c.ParameterManager.GetDataSplitType(),
 		Status:                 "running",
 		Participants:           result,
+		CoordinatorIP:          c.GetLocalIP(),
+		CoordinatorPort:        c.HTTPServer.Port,
+		StartTime:              coordinatorStartTime,
 	}
 	ctx.JSON(200, resp)
 }
