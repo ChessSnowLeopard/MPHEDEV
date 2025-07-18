@@ -142,7 +142,7 @@ func main() {
 	fmt.Println("\n4. 重排数据集...")
 
 	// 为了演示，只处理部分数据
-	numBatchesToProcess := 5
+	numBatchesToProcess := 1
 	smallTrainDataset := &training.Dataset{
 		Images: trainDataset.Images[:assembler.ImagesPerVector*numBatchesToProcess],
 		Labels: trainDataset.Labels[:assembler.ImagesPerVector*numBatchesToProcess],

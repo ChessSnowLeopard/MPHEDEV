@@ -947,7 +947,7 @@ func (c *Coordinator) callCtCNN() {
 	cmd := exec.Command(exePath)
 
 	// 设置工作目录为MPHEDev根目录，这样ctCNN可以找到pkg/training/data/目录
-	cmd.Dir = ".."
+	cmd.Dir = "."
 
 	// 创建管道来捕获输出
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -1013,16 +1013,68 @@ func (c *Coordinator) callCtCNN() {
 
 // parseTrainingOutput 解析训练输出并更新训练历史
 func (c *Coordinator) parseTrainingOutput(line string) {
-	// 解析训练轮次结果，格式如：
-	// ✓ Epoch 1: 损失=2.302585, 准确率=10.00%, 学习率=0.100000, 用时=7.3s
+	// 解析训练轮次结果，支持两种格式：
+	// 1. ✅ 第%d轮训练完成: 处理%d/%d批次, 平均损失=%.6f, 平均准确率=%.2f%%
+	// 2. ✓ Epoch 1: 损失=2.302585, 准确率=10.00%, 学习率=0.100000, 用时=7.3s
 
-	if strings.Contains(line, "✓ Epoch") && strings.Contains(line, "损失=") && strings.Contains(line, "准确率=") {
+	// 检查是否包含训练完成信息
+	if !strings.Contains(line, "训练完成") && !strings.Contains(line, "✓ Epoch") {
+		return
+	}
+
+	var epoch int
+	var loss float64
+	var accuracy float64
+	var learningRate float64 = 0.1 // 默认学习率
+	var epochTime time.Duration
+
+	// 尝试解析第一种格式：✅ 第%d轮训练完成
+	if strings.Contains(line, "✅") && strings.Contains(line, "轮训练完成") {
+		// 提取轮次
+		epochMatch := regexp.MustCompile(`第(\d+)轮训练完成`).FindStringSubmatch(line)
+		if len(epochMatch) < 2 {
+			return
+		}
+		var err error
+		epoch, err = strconv.Atoi(epochMatch[1])
+		if err != nil {
+			return
+		}
+
+		// 提取损失值
+		lossMatch := regexp.MustCompile(`平均损失=([\d.]+)`).FindStringSubmatch(line)
+		if len(lossMatch) < 2 {
+			return
+		}
+		loss, err = strconv.ParseFloat(lossMatch[1], 64)
+		if err != nil {
+			return
+		}
+
+		// 提取准确率
+		accuracyMatch := regexp.MustCompile(`平均准确率=([\d.]+)%`).FindStringSubmatch(line)
+		if len(accuracyMatch) < 2 {
+			return
+		}
+		accuracy, err = strconv.ParseFloat(accuracyMatch[1], 64)
+		if err != nil {
+			return
+		}
+		accuracy = accuracy / 100.0 // 转换为小数
+
+		// 估算用时（从当前时间计算）
+		epochTime = time.Duration(5 * time.Second) // 默认5秒
+
+	} else if strings.Contains(line, "✓ Epoch") && strings.Contains(line, "损失=") && strings.Contains(line, "准确率=") {
+		// 解析第二种格式：✓ Epoch 1: 损失=2.302585, 准确率=10.00%, 学习率=0.100000, 用时=7.3s
+
 		// 提取轮次
 		epochMatch := regexp.MustCompile(`Epoch (\d+):`).FindStringSubmatch(line)
 		if len(epochMatch) < 2 {
 			return
 		}
-		epoch, err := strconv.Atoi(epochMatch[1])
+		var err error
+		epoch, err = strconv.Atoi(epochMatch[1])
 		if err != nil {
 			return
 		}
@@ -1032,7 +1084,7 @@ func (c *Coordinator) parseTrainingOutput(line string) {
 		if len(lossMatch) < 2 {
 			return
 		}
-		loss, err := strconv.ParseFloat(lossMatch[1], 64)
+		loss, err = strconv.ParseFloat(lossMatch[1], 64)
 		if err != nil {
 			return
 		}
@@ -1042,7 +1094,7 @@ func (c *Coordinator) parseTrainingOutput(line string) {
 		if len(accuracyMatch) < 2 {
 			return
 		}
-		accuracy, err := strconv.ParseFloat(accuracyMatch[1], 64)
+		accuracy, err = strconv.ParseFloat(accuracyMatch[1], 64)
 		if err != nil {
 			return
 		}
@@ -1050,7 +1102,6 @@ func (c *Coordinator) parseTrainingOutput(line string) {
 
 		// 提取学习率
 		lrMatch := regexp.MustCompile(`学习率=([\d.]+)`).FindStringSubmatch(line)
-		learningRate := 0.1 // 默认学习率
 		if len(lrMatch) >= 2 {
 			if lr, err := strconv.ParseFloat(lrMatch[1], 64); err == nil {
 				learningRate = lr
@@ -1059,16 +1110,18 @@ func (c *Coordinator) parseTrainingOutput(line string) {
 
 		// 提取用时
 		timeMatch := regexp.MustCompile(`用时=([\d.]+)s`).FindStringSubmatch(line)
-		var epochTime time.Duration
 		if len(timeMatch) >= 2 {
 			if seconds, err := strconv.ParseFloat(timeMatch[1], 64); err == nil {
 				epochTime = time.Duration(seconds * float64(time.Second))
 			}
 		}
-
-		// 添加训练轮次结果
-		AddTrainingEpoch(epoch, loss, accuracy, learningRate, epochTime)
-		fmt.Printf("📊 解析到训练轮次: Epoch=%d, Loss=%.6f, Accuracy=%.2f%%, LR=%.6f, Time=%v\n",
-			epoch, loss, accuracy*100, learningRate, epochTime)
+	} else {
+		// 不匹配任何已知格式
+		return
 	}
+
+	// 添加训练轮次结果
+	AddTrainingEpoch(epoch, loss, accuracy, learningRate, epochTime)
+	fmt.Printf("📊 解析到训练轮次: Epoch=%d, Loss=%.6f, Accuracy=%.2f%%, LR=%.6f, Time=%v\n",
+		epoch, loss, accuracy*100, learningRate, epochTime)
 }
